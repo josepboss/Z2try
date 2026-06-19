@@ -114,6 +114,7 @@ const html = `<!DOCTYPE html>
   tr:hover td{background:#0f172a}
   .tag{display:inline-block;padding:.15rem .5rem;border-radius:.25rem;font-size:.75rem;background:#312e81;color:#a5b4fc}
   .badge-tag{display:inline-block;padding:.15rem .5rem;border-radius:.25rem;font-size:.75rem;background:#064e3b;color:#6ee7b7}
+  .chat-tag{display:inline-block;padding:.15rem .5rem;border-radius:.25rem;font-size:.75rem;background:#7c3aed;color:#c4b5fd}
   #msg{padding:.5rem 1rem;border-radius:.375rem;margin-bottom:1rem;font-size:.875rem;display:none}
   .ok{background:#064e3b;color:#6ee7b7}
   .err{background:#7f1d1d;color:#fca5a5}
@@ -138,6 +139,8 @@ const html = `<!DOCTYPE html>
   .separator-row{display:flex;align-items:center;gap:.5rem;margin-top:.5rem}
   .separator-row label{margin:0;font-size:.8rem;color:#94a3b8;flex:0 0 auto;width:150px}
   .separator-row input{flex:1;padding:.35rem .5rem;font-size:.8rem;background:#1e293b;border:1px solid #334155;border-radius:.25rem;color:#e2e8f0}
+  .delivery-hint{padding:.5rem .75rem;background:#1e1b4b;border:1px solid #4c1d95;border-radius:.375rem;font-size:.8rem;color:#c4b5fd;margin-top:.5rem}
+  .delivery-hint strong{color:#a78bfa}
 </style>
 </head>
 <body>
@@ -184,10 +187,13 @@ const html = `<!DOCTYPE html>
   <select id="deliveryMethod">
     <option value="file">File (XLSX upload)</option>
     <option value="direct">Direct (paste credentials)</option>
-    <option value="chat">Chat (send via chat)</option>
+    <option value="chat">Chat (M3U link → form fill → chat message)</option>
   </select>
+  <div id="chatDeliveryHint" class="delivery-hint" style="display:none">
+    <strong>💬 Chat Delivery:</strong> For IPTV / M3U subscription orders. The extension will parse the M3U URL from Lfollowers, auto-fill the Z2U delivery form fields (Login Account, Password, Domain), and send the formatted credentials via Z2U chat.
+  </div>
 
-  <label>Column Map <span style="color:#64748b;font-size:.7rem">(maps data fields to Excel columns)</span></label>
+  <label>Column Map <span style="color:#64748b;font-size:.7rem">(maps data fields to Excel columns — for File delivery only)</span></label>
   <div class="preset-btns">
     <button onclick="applyPreset('email')">Preset: Email/Password</button>
     <button onclick="applyPreset('username')">Preset: Username/Password</button>
@@ -245,6 +251,16 @@ const html = `<!DOCTYPE html>
 </div>
 
 <script>
+// ── Delivery method hint toggle ───────────────────────────────────────────────
+document.getElementById("deliveryMethod").addEventListener("change", function() {
+  const hint = document.getElementById("chatDeliveryHint");
+  if (this.value === "chat") {
+    hint.style.display = "block";
+  } else {
+    hint.style.display = "none";
+  }
+});
+
 // ── Presets ───────────────────────────────────────────────────────────────────
 const PRESETS = {
   email: [
@@ -380,14 +396,15 @@ async function loadMappings() {
     return;
   }
   tbody.innerHTML = entries.map(([title, conf]) => {
-    const serviceId     = (typeof conf === "string" ? conf : conf.serviceId) || "";
+    const serviceId      = (typeof conf === "string" ? conf : conf.serviceId) || "";
     const deliveryMethod = (typeof conf === "string" ? "file" : (conf.deliveryMethod || "file"));
-    const separator     = (typeof conf === "string" ? null : (conf.separator || null));
-    const columnMap     = (typeof conf === "string" ? { email: "A", password: "B" } : (conf.columnMap || { email: "A", password: "B" }));
+    const separator      = (typeof conf === "string" ? null : (conf.separator || null));
+    const columnMap      = (typeof conf === "string" ? { email: "A", password: "B" } : (conf.columnMap || { email: "A", password: "B" }));
+    const tagClass       = deliveryMethod === "chat" ? "chat-tag" : "tag";
     return \`<tr>
       <td>\${title}</td>
       <td><span class="tag">\${serviceId}</span></td>
-      <td><span class="tag">\${deliveryMethod}</span></td>
+      <td><span class="\${tagClass}">\${deliveryMethod}</span></td>
       <td><span class="tag">\${separator || "default (:)"}</span></td>
       <td style="max-width:220px;white-space:pre-wrap;word-break:break-word;color:#94a3b8">\${JSON.stringify(columnMap)}</td>
       <td><button class="danger" onclick="deleteMapping('\${encodeURIComponent(title)}')">Delete</button></td>
@@ -448,6 +465,8 @@ async function addMapping() {
       { id: Date.now() + 1, field: "password", column: "B" },
     ];
     document.getElementById("separatorInput").value = "";
+    document.getElementById("deliveryMethod").value = "file";
+    document.getElementById("chatDeliveryHint").style.display = "none";
     renderColMapRows();
     updateColMapPreview();
     loadMappings();
@@ -681,8 +700,7 @@ router.post("/admin/heal-config", (req, res) => {
   const prev = loadHealConfig();
   const next: HealConfig = {
     openrouterApiKey: body.openrouterApiKey?.trim() || prev.openrouterApiKey || "",
-    healModel: body.healModel?.trim() || prev.healModel || "google/gemini-1.5-flash",
-  };
+    healModel: body.healModel<dyad-write path="artifacts/api-server/src/routes/admin.ts" description="Continuing admin.ts from where it was cut off">
   saveHealConfig(next);
   res.json({ ok: true, hasApiKey: Boolean(next.openrouterApiKey), healModel: next.healModel });
 });
@@ -755,7 +773,7 @@ router.post("/admin/analytics/record", (req, res) => {
       recordedAt: now.toISOString(),
     });
     saveAnalytics(records);
-    console.log(`[analytics] recorded orderId=${orderId} amount=${amount ?? "null"}`);
+    logger.info({ orderId, amount }, "[analytics] recorded orderId");
   }
   res.json({ ok: true, duplicate: exists });
 });
@@ -812,7 +830,7 @@ router.post("/admin/queue-chat-reply", (req, res) => {
     return;
   }
   pendingChatReplies.push({ username, message, orderId, queuedAt: new Date().toISOString() });
-  console.log(`[chat-queue] Queued reply for "${username}": "${message.slice(0, 60)}"`);
+  logger.info({ username, messageLength: message.length }, "[chat-queue] Queued reply");
   res.json({ ok: true, queued: pendingChatReplies.length });
 });
 
@@ -886,7 +904,7 @@ router.post("/admin/proxy-upload", async (req, res) => {
 
         const text = await resp.text();
         results.push({ url, field: fieldName, status: resp.status, body: text.slice(0, 400) });
-        console.log(`[proxy-upload] ${resp.status} ${url} field=${fieldName} → ${text.slice(0, 200)}`);
+        logger.info({ url, field: fieldName, status: resp.status }, "[proxy-upload] response");
 
         let json: any = null;
         try { json = JSON.parse(text); } catch { /* not JSON */ }
@@ -905,7 +923,7 @@ router.post("/admin/proxy-upload", async (req, res) => {
         }
       } catch (e: any) {
         results.push({ url, field: fieldName, status: 0, body: e.message });
-        console.error(`[proxy-upload] Error ${url} field=${fieldName}:`, e.message);
+        logger.error({ url, field: fieldName, err: e.message }, "[proxy-upload] error");
       }
     }
   }

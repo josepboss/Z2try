@@ -6,23 +6,18 @@
   const isDetailPage = !isListPage && /sellOrder(\?|$)/.test(href);
 
   // ── Listen for upload requests captured by injected.js ────────────────────
-  // injected.js now runs as a MAIN-world content script at document_start
-  // (declared in manifest.json) — it patches fetch/XHR before Z2U's code
-  // loads, so Z2U captures our patched versions and can't bypass them.
-  // It communicates back here via window.postMessage.
   window.addEventListener("message", (e) => {
     if (e.data?.source !== "__z2u_injected__") return;
     if (e.data.type === "UPLOAD_REQUEST_CAPTURED") {
       const captured = { url: e.data.url, method: e.data.method, fields: e.data.fields };
       console.log("[Z2U][CAPTURE] Upload endpoint learned:", captured.method, captured.url, captured.fields);
       chrome.storage.local.set({ z2uUploadEndpoint: captured }, () => {
-        // Signal background to update badge
         chrome.runtime.sendMessage({ type: "ENDPOINT_CAPTURED" });
       });
     }
   });
 
-  // ── Logging helper ─────────────────────────────────────────────────────────
+  // ── Logging helpers ────────────────────────────────────────────────────────
 
   function log(step, msg, ...extra) {
     const ts = new Date().toISOString().slice(11, 23);
@@ -39,10 +34,9 @@
     console.error(`[Z2U] ${step} ❌ ${msg}`, ...extra);
   }
 
-  // ── Analytics helpers (fire-and-forget, no fulfillment impact) ────────────
+  // ── Analytics helpers ──────────────────────────────────────────────────────
 
   function extractOrderAmount() {
-    // 1) Look for a labelled row: element containing "Price"/"Total" then a sibling
     const allEls = Array.from(document.querySelectorAll("*"));
     for (const el of allEls) {
       if (el.childElementCount > 0) continue;
@@ -63,7 +57,6 @@
         }
       }
     }
-    // 2) Fallback: scan visible text for $XX.XX patterns, pick the largest plausible one
     const matches = (document.body.innerText || "").match(/\$\s*(\d+(?:\.\d{1,2})?)/g);
     if (matches) {
       const amounts = matches
@@ -84,7 +77,6 @@
     } catch (_) {}
   }
 
-  // Dumps all visible button/link texts on the page — useful for debugging
   function dumpButtons(label) {
     const btns = Array.from(document.querySelectorAll("button, a[class*='btn'], a[class*='button']"))
       .map((b) => `"${b.textContent?.trim()}"`)
@@ -131,7 +123,7 @@
     return true;
   }
 
-  // ── Persistent processed set (via background) ──────────────────────────────
+  // ── Persistent processed set ───────────────────────────────────────────────
 
   const sessionDone = new Set();
 
@@ -143,7 +135,6 @@
     });
   }
 
-  // For unmapped orders that only had "Preparing" clicked — separate from fully-fulfilled.
   function bgIsPreparedOnly(orderId) {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: "IS_PREPARED_ONLY", orderId }, (r) =>
@@ -172,26 +163,20 @@
     log("DL", `Download response: HTTP ${res.status}`);
     if (!res.ok) throw new Error(`Download failed: ${res.status}`);
     const bytes = new Uint8Array(await res.arrayBuffer());
-
-    // Preserve original filename from Content-Disposition header; fall back to URL segment
     const cd = res.headers.get("content-disposition") || "";
     const cdMatch = cd.match(/filename\*?=(?:UTF-8'')?["']?([^"';\r\n]+)["']?/i);
     const filename = (cdMatch?.[1] || url.split("/").pop() || "template.xlsx")
-      .replace(/[^\w\-. ]/g, "_")   // sanitise any unsafe chars
+      .replace(/[^\w\-. ]/g, "_")
       .replace(/^_+|_+$/g, "")
       || "template.xlsx";
-
     log("DL", `Downloaded ${bytes.byteLength} bytes → filename: "${filename}"`);
     return { bytes, filename };
   }
 
   // ── Backend call ───────────────────────────────────────────────────────────
-  // The fetch runs inside background.js (service workers are exempt from the
-  // browser's mixed-content policy, so HTTP VPS URLs work from HTTPS Z2U pages).
 
   async function sendToBackend({ orderId, title, quantity, templateBlob, templateFilename }) {
     log("BACKEND", `Sending to backend → orderId=${orderId} title="${title.slice(0, 40)}..." qty=${quantity} blobSize=${templateBlob.length} filename="${templateFilename}"`);
-
     const result = await new Promise((resolve, reject) => {
       chrome.runtime.sendMessage({ type: "PROCESS_ORDER", data: { orderId, title, quantity, templateBlob, templateFilename } }, (r) => {
         if (chrome.runtime.lastError) {
@@ -202,123 +187,27 @@
         resolve(r);
       });
     });
-
     if (!result?.ok) throw new Error(result?.error || "Unknown backend error");
     return new Uint8Array(result.result.filledFile);
   }
 
   // ── Upload filled file ─────────────────────────────────────────────────────
 
-  function injectFileIntoInput(input, file) {
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    // Try native files setter first (React-compatible)
-    const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "files");
-    if (desc && desc.set) {
-      desc.set.call(input, dt.files);
-      log("UPLOAD", `[inject] native files setter used`);
-    } else {
-      Object.defineProperty(input, "files", { value: dt.files, configurable: true });
-      log("UPLOAD", `[inject] Object.defineProperty fallback used`);
-    }
-    input.dispatchEvent(new Event("input",  { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-  }
-
-  // Injects a file AND fires React's internal onChange so the component state updates.
-  // Z2U uses React; without this the file shows visually but the React state stays empty
-  // and SUBMIT fails with a "Please input note" (= "no file selected") validation error.
-  async function injectFileAndUpdateReact(input, file) {
-    const dt = new DataTransfer();
-    dt.items.add(file);
-
-    // 1. Set the native files property
-    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "files")?.set;
-    if (nativeSetter) {
-      nativeSetter.call(input, dt.files);
-    } else {
-      Object.defineProperty(input, "files", { value: dt.files, configurable: true, writable: true });
-    }
-
-    // 2. Call React's own onChange handler via the __reactProps key on the DOM node.
-    //    This is the only reliable way to update React's internal component state
-    //    when setting files programmatically (native events alone don't always work).
-    const reactPropsKey = Object.keys(input).find(
-      (k) => k.startsWith("__reactProps") || k.startsWith("__reactInternals")
-    );
-    if (reactPropsKey) {
-      const props = input[reactPropsKey];
-      const onChangeFn = props?.onChange;
-      if (typeof onChangeFn === "function") {
-        const fakeEvent = {
-          target: input, currentTarget: input,
-          type: "change", bubbles: true,
-          nativeEvent: { target: input, type: "change" },
-          preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
-        };
-        onChangeFn(fakeEvent);
-        log("UPLOAD", `[inject] Called React onChange via ${reactPropsKey}`);
-      } else {
-        log("UPLOAD", `[inject] React props found (${reactPropsKey}) but no onChange`);
-      }
-    } else {
-      // Fallback: try __reactFiber memoizedProps
-      const fiberKey = Object.keys(input).find((k) => k.startsWith("__reactFiber"));
-      if (fiberKey) {
-        const onChange = input[fiberKey]?.memoizedProps?.onChange;
-        if (typeof onChange === "function") {
-          const fakeEvent = {
-            target: input, currentTarget: input, type: "change", bubbles: true,
-            nativeEvent: { target: input }, preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
-          };
-          onChange(fakeEvent);
-          log("UPLOAD", `[inject] Called React onChange via __reactFiber`);
-        }
-      } else {
-        log("UPLOAD", `[inject] No React props key found — dispatching native events only`);
-      }
-    }
-
-    // 3. Also dispatch native events as belt-and-suspenders
-    input.dispatchEvent(new Event("input",  { bubbles: true }));
-    await sleep(50);
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-    await sleep(200);
-
-    const count = input.files?.length ?? 0;
-    log("UPLOAD", `[inject] After injection: files.length=${count} name="${input.files?.[0]?.name}"`);
-    return count > 0;
-  }
-
-  // Find the xlsx upload input — Z2U uses id="upfile" / name="upload" for the
-  // bulk delivery form. FilePond inputs (order_before_img / order_after_img) are
-  // for trade screenshots and must be avoided.
   function findXlsxInput() {
     const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
     log("UPLOAD", `[B] All file inputs: ${inputs.map(i => `id="${i.id}" name="${i.name}" accept="${i.accept}"`).join(" | ")}`);
-
-    // Priority 1: known Z2U xlsx input IDs/names
     const byId   = inputs.find((i) => i.id === "upfile" || i.name === "upload");
     if (byId) return byId;
-
-    // Priority 2: explicitly accepts spreadsheet types
     const byAccept = inputs.find((i) => /xlsx|spreadsheet|csv|xls/i.test(i.accept || ""));
     if (byAccept) return byAccept;
-
-    // Priority 3: exclude FilePond screenshot inputs
     const nonFilePond = inputs.find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name));
     if (nonFilePond) return nonFilePond;
-
     return null;
   }
 
   // ── Confirm Delivered flow ────────────────────────────────────────────────
-  // PREREQUISITE: "View Delivery Account Information" MUST be visible before
-  // this function clicks anything. Z2U only shows that button after it has
-  // processed and recorded the uploaded XLSX. Clicking "Confirm Delivered"
-  // before that button appears means the XLSX was never accepted.
+
   async function confirmDeliveredFlow(quantity) {
-    // ── [D1] Wait for "View Delivery Account Information" ──────────────────
     function hasViewDeliveryBtn() {
       return Array.from(document.querySelectorAll("button, a"))
         .some((b) => /view\s+delivery\s+account/i.test(b.textContent || ""));
@@ -332,7 +221,7 @@
     }
 
     if (!hasViewDeliveryBtn()) {
-      warn("UPLOAD", "[D1] ❌ 'View Delivery Account Information' never appeared — XLSX not accepted by Z2U. NOT clicking Confirm Delivered.");
+      warn("UPLOAD", "[D1] ❌ 'View Delivery Account Information' never appeared — XLSX not accepted by Z2U.");
       dumpButtons("UPLOAD-NO-VIEW-DELIVERY");
       return false;
     }
@@ -340,7 +229,6 @@
 
     dumpButtons("UPLOAD-BEFORE-CONFIRM");
 
-    // ── [D2] Find "Confirm Delivered" button ───────────────────────────────
     log("UPLOAD", "[D2] Looking for 'Confirm Delivered' button…");
     const confirmBtn =
       await waitForElementByText("button", "confirm delivered", 8000) ||
@@ -353,11 +241,6 @@
     }
     log("UPLOAD", `[D2] Found: "${confirmBtn.textContent?.trim()}"`);
 
-    // ── [D2b] Fill inline quantity input BEFORE clicking ──────────────────
-    // Z2U renders a number/text input directly on the page (next to the
-    // Confirm Delivered button) that must be filled with the delivered count.
-    // Look inside the same container as the button, then fall back to any
-    // visible non-modal input on the page.
     function fillInput(el, val) {
       const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
       if (nativeSet) nativeSet.call(el, String(val)); else el.value = String(val);
@@ -368,13 +251,10 @@
     const inlineInput = await (async () => {
       const end = Date.now() + 4000;
       while (Date.now() < end) {
-        // Priority 1: input that is a sibling or cousin of the Confirm button
         const container = confirmBtn.closest("div, section, form, td, li") || document.body;
         const nearby = Array.from(container.querySelectorAll("input"))
           .find((i) => i.type !== "file" && i.type !== "hidden" && i.type !== "checkbox" && !i.readOnly);
         if (nearby) return nearby;
-
-        // Priority 2: any visible, non-modal, non-search input on the page
         const page = Array.from(document.querySelectorAll("input"))
           .find((i) =>
             i.type !== "file" && i.type !== "hidden" && i.type !== "checkbox" &&
@@ -396,24 +276,18 @@
       log("UPLOAD", "[D2b] No inline quantity input found — clicking without pre-fill.");
     }
 
-    // ── [D2c] Click Confirm Delivered ─────────────────────────────────────
-    // Set a persistent flag BEFORE the click resolves — if Z2U reloads the
-    // page (as it does for Preparing), this flag survives and the new content
-    // script's [0c] block will navigate to sellOrder/index instead of stalling.
     const _navOrderId = new URLSearchParams(window.location.search).get("order_id") || "";
     if (_navOrderId) {
       await chrome.storage.local.set({ pendingNavigateToList: _navOrderId });
-      log("UPLOAD", `[D2c] 🔖 Set pendingNavigateToList=${_navOrderId} (survives reload).`);
+      log("UPLOAD", `[D2c] 🔖 Set pendingNavigateToList=${_navOrderId}`);
     }
     confirmBtn.click();
     await sleep(2000);
 
-    // ── [D3] Handle any quantity / OK dialog that Z2U may show ─────────────
     const modalEl = () => document.querySelector(
       ".ant-modal, .ant-modal-content, .modal, [role='dialog'], [class*='modal'], [class*='dialog']"
     );
 
-    // Fill quantity if a number input appeared in a post-click modal
     const numInput = await (async () => {
       const end = Date.now() + 4000;
       while (Date.now() < end) {
@@ -437,7 +311,6 @@
       await sleep(400);
     }
 
-    // Click OK / Confirm inside any modal that appeared
     const okBtn = await (async () => {
       const end = Date.now() + 5000;
       while (Date.now() < end) {
@@ -463,10 +336,6 @@
       log("UPLOAD", "[D3] No OK/Confirm dialog appeared — continuing.");
     }
 
-    // ── [D4] Final success check ────────────────────────────────────────────
-    // After clicking Confirm Delivered, Z2U usually keeps or removes the
-    // "View Delivery Account Information" button. Either way, we already
-    // confirmed it was there before clicking, so the delivery was recorded.
     const errBanner = document.querySelector(".ant-message-notice, .ant-message-error, .ant-message-warning");
     if (errBanner) {
       const txt = errBanner.textContent?.trim() || "";
@@ -474,22 +343,18 @@
       if (/error|fail|invalid|reject/i.test(txt)) return false;
     }
 
-    log("UPLOAD", "[D4] ✅ Confirm Delivered flow complete — returning to order list.");
+    log("UPLOAD", "[D4] ✅ Confirm Delivered flow complete.");
     await chrome.storage.local.remove(["pendingNavigateToList"]);
     window.location.href = "https://www.z2u.com/sellOrder/index";
     return true;
   }
 
-  // ── Direct API upload (bypasses the modal entirely) ───────────────────────
-  // Uses the endpoint captured by injected.js from a previous manual/successful
-  // upload.  Replays the exact same FormData structure with our filled file,
-  // substituting the orderId field with the current order's ID.
-  // Z2U file field names to probe when CDP couldn't decode the multipart body
+  // ── Direct API upload ──────────────────────────────────────────────────────
+
   const Z2U_FILE_FIELDS = ["upfile", "file", "upload", "excel", "formFile"];
 
   async function tryUploadWithField(url, method, fieldName, extraFields, file, orderId, csrfToken, note) {
     const formData = new FormData();
-    // Attach extra string fields first (order_id, note, etc.)
     for (const field of (extraFields || [])) {
       if (field.type !== "file") {
         const val = /^Z\d+$/i.test(field.value) ? orderId : (field.value || "");
@@ -499,15 +364,13 @@
     if (orderId && !(extraFields || []).some((f) => /order_?id/i.test(f.key))) {
       formData.append("order_id", orderId);
     }
-    // Z2U's upload modal requires a "note" field — include it always
     const noteValue = note || "Delivered";
     if (!(extraFields || []).some((f) => /^note$/i.test(f.key))) {
       formData.append("note", noteValue);
     }
     formData.append(fieldName, file, file.name);
-    log("UPLOAD-API", `  Trying field="${fieldName}" note="${noteValue}" + ${(extraFields||[]).filter(f=>f.type!=="file").map(f=>f.key).join(",")}`);
+    log("UPLOAD-API", `  Trying field="${fieldName}" note="${noteValue}"`);
 
-    // Headers that make this look like a legitimate same-origin XHR request
     const headers = {
       "X-Requested-With": "XMLHttpRequest",
       "Referer": window.location.href,
@@ -524,38 +387,27 @@
 
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
 
-    // Parse Z2U's JSON response
     let json = null;
-    try { json = JSON.parse(text); } catch (_) { /* not JSON */ }
+    try { json = JSON.parse(text); } catch (_) {}
 
     if (json) {
       const code = json.code ?? json.status ?? json.errCode;
-      // code 0, 200, 1, true → success; anything else → failure
       const isOkCode = code === 0 || code === 200 || code === "0" || code === "200" || code === true || code === 1;
       if (!isOkCode) {
         throw new Error(`app-error code=${code} msg=${json.msg ?? json.message ?? "?"}`);
       }
-      // Extra check: successful Z2U uploads return a non-empty data field
-      // If data is empty/null and msg suggests no file, treat as failure
       const msg = (json.msg || json.message || "").toLowerCase();
       if (/select|no file|missing|require|please/i.test(msg)) {
         throw new Error(`app-error: "${json.msg ?? json.message}"`);
       }
-      // data field should be a URL or non-empty object for real uploads
       const hasData = json.data !== null && json.data !== undefined && json.data !== "" && json.data !== false;
       log("UPLOAD-API", `  code=${code} data=${JSON.stringify(json.data)?.slice(0,100)} hasData=${hasData}`);
       return hasData;
     }
 
-    // Non-JSON response — if we got 200 and it's not an HTML error page, assume OK
     return !text.toLowerCase().includes("<html") && !text.toLowerCase().includes("error");
   }
 
-  // Known Z2U XLSX delivery upload endpoints.
-  // IMPORTANT: uploadOrderImg.html is intentionally excluded — it accepts any
-  // file and returns success, but it is for trade evidence screenshots, NOT for
-  // the bulk delivery XLSX template.  Including it causes false-positive
-  // "upload succeeded" results which skip the real upload and confirm delivery empty.
   const Z2U_KNOWN_ENDPOINTS = [
     { url: "https://www.z2u.com/sellOrder/uploadSellForm",   method: "POST" },
     { url: "https://www.z2u.com/SellOrder/uploadSellForm",   method: "POST" },
@@ -567,7 +419,6 @@
     { url: "https://www.z2u.com/api/upload/sellForm",        method: "POST" },
   ];
 
-  // Returns true if a URL is the image-evidence endpoint (wrong for XLSX delivery)
   function isImageEndpoint(url) {
     return /uploadOrderImg|uploadImg|uploadImage|orderImg/i.test(url || "");
   }
@@ -593,14 +444,8 @@
       chrome.storage.local.get(["z2uUploadEndpoint"], (d) => r(d.z2uUploadEndpoint))
     );
 
-    // ── Try stored endpoint first (skip if it's the image-evidence endpoint) ──
-    if (stored?.url && isImageEndpoint(stored.url)) {
-      warn("UPLOAD-API", `Stored endpoint "${stored.url}" is an image/screenshot endpoint — skipping to avoid false-positive. Use Reset Endpoint + Capture Mode to get the real XLSX endpoint.`);
-    }
     if (stored?.url && !isImageEndpoint(stored.url)) {
       log("UPLOAD-API", `Stored endpoint: ${stored.method || "POST"} ${stored.url}`);
-
-      // Case 1: CDP decoded the multipart body — we know the exact field name
       if (!stored.probeFields && stored.fields?.length) {
         const fileField  = stored.fields.find((f) => f.type === "file");
         const fieldName  = fileField?.key || "upfile";
@@ -614,7 +459,6 @@
           warn("UPLOAD-API", `Stored endpoint failed: ${e.message} — will probe fallbacks`);
         }
       } else {
-        // Case 2: probe field names on stored endpoint
         const extraFields = (stored.fields || []).filter((f) => f.type !== "file");
         const winField = await tryEndpoint(stored.url, stored.method || "POST", extraFields, file, orderId, "stored", csrfToken);
         if (winField) {
@@ -628,15 +472,12 @@
       log("UPLOAD-API", "No stored endpoint — going straight to known fallbacks");
     }
 
-    // ── Try known Z2U endpoints as fallbacks ──────────────────────────────────
-    // Skip any URL identical to the stored one (already tried above)
     const storedUrl = stored?.url || "";
     for (const ep of Z2U_KNOWN_ENDPOINTS) {
       if (ep.url === storedUrl) continue;
       log("UPLOAD-API", `Probing fallback: ${ep.method} ${ep.url}`);
       const winField = await tryEndpoint(ep.url, ep.method, [], file, orderId, ep.url.split("/").pop(), csrfToken);
       if (winField) {
-        // Save the discovered endpoint so we use it directly next time
         const saved = {
           url: ep.url, method: ep.method,
           fields: [{ key: winField, type: "file" }],
@@ -648,7 +489,6 @@
       }
     }
 
-    // All endpoints exhausted — fall through to UI approach
     warn("UPLOAD-API", "All known endpoints failed. Falling back to UI approach.");
     return null;
   }
@@ -660,15 +500,12 @@
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
 
-    // Derive orderId from URL (needed for direct API upload field substitution)
     const _params  = new URLSearchParams(window.location.search);
     const _orderId = _params.get("order_id") || _params.get("orderId") || "";
 
-    // ── Step A: Close any open modals ────────────────────────────────────────
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await sleep(500);
 
-    // ── Step B: Download file to disk (visual confirmation for the user) ──────
     log("UPLOAD", `[B] Downloading XLSX to disk…`);
     const dlResult = await new Promise((resolve) => {
       chrome.runtime.sendMessage(
@@ -682,8 +519,7 @@
       warn("UPLOAD", `[B] Download to disk failed (non-fatal): ${dlResult.error}`);
     }
 
-    // ── Step C_LOCAL: Local Playwright Bridge (via background.js to bypass mixed content) ──
-    log("UPLOAD", "[C_LOCAL] Sending XLSX to bridge via background.js (bypasses HTTPS→HTTP restriction)…");
+    log("UPLOAD", "[C_LOCAL] Sending XLSX to bridge via background.js…");
     try {
       const bridgeResp = await new Promise((resolve, reject) => {
         chrome.runtime.sendMessage({
@@ -701,23 +537,16 @@
       if (bridgeResp.ok) {
         const bridgeJson = bridgeResp.result;
         if (bridgeJson.ok) {
-          log("UPLOAD", `[C_LOCAL] ✅ Bridge upload succeeded: ${bridgeJson.message || "ok"}`);
-          // Persist a "pending confirm" flag BEFORE marking processed.
-          // If Z2U navigates/reloads the page when the upload modal closes,
-          // the current async chain dies here. The new content script checks
-          // this flag at startup and resumes confirmDeliveredFlow directly,
-          // bypassing the bgIsProcessed early-return that would otherwise skip it.
+          log("UPLOAD", `[C_LOCAL] ✅ Bridge upload succeeded`);
           await chrome.storage.local.set({
             pendingConfirmOrderId: _orderId,
             pendingConfirmQty:     quantity,
           });
-          // Now lock against re-upload.
           sessionDone.add(_orderId);
           await bgMarkProcessed(_orderId);
-          log("UPLOAD", `[C_LOCAL] 🔒 Order ${_orderId} locked as processed — no re-upload possible.`);
+          log("UPLOAD", `[C_LOCAL] 🔒 Order ${_orderId} locked as processed.`);
           await sleep(1500);
           const confirmed = await confirmDeliveredFlow(quantity);
-          // Clean up the pending flag now that we finished (success or not).
           await chrome.storage.local.remove(["pendingConfirmOrderId", "pendingConfirmQty"]);
           return confirmed;
         }
@@ -732,6 +561,392 @@
     err("UPLOAD", "[C_LOCAL] ❌ Upload failed. Make sure bridge.py is running on your local machine.");
     return false;
   }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  CHAT DELIVERY — M3U Credential Extraction & Form Auto-Fill
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Parse an M3U URL and extract username, password, and base domain.
+   * @param {string} m3uUrl
+   * @returns {{ username: string, password: string, baseDomain: string, rawUrl: string } | null}
+   */
+  function parseM3uUrl(m3uUrl) {
+    if (!m3uUrl || typeof m3uUrl !== 'string') return null;
+    const trimmed = m3uUrl.trim();
+    if (!trimmed) return null;
+    try {
+      const url = new URL(trimmed);
+      const username = url.searchParams.get('username') || '';
+      const password = url.searchParams.get('password') || '';
+      if (!username || !password) {
+        log("CHAT-DELIVERY", `parseM3uUrl: missing username or password in "${trimmed.slice(0, 80)}"`);
+        return null;
+      }
+      const baseDomain = `${url.protocol}//${url.host}`;
+      log("CHAT-DELIVERY", `parseM3uUrl: ✅ username="${username}" domain="${baseDomain}"`);
+      return { username, password, baseDomain, rawUrl: trimmed };
+    } catch (e) {
+      log("CHAT-DELIVERY", `parseM3uUrl: failed to parse "${trimmed.slice(0, 80)}" — ${e.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Get alternative domains for a base domain from the server config.
+   * @param {string} baseDomain
+   * @returns {string[]}
+   */
+  function getAlternativeDomains(baseDomain) {
+    // Inline the domain config lookup to avoid import issues in content script
+    const config = {
+      "http://skyline-mm.com": [
+        "http://example1.com",
+        "http://example2.com",
+      ],
+      "http://line.trxdnscloud.ru": [
+        "http://vpn.trxdnscloud.ru",
+        "http://tv.trexiptv.com",
+      ],
+    };
+    const normalized = (baseDomain || "").trim().toLowerCase();
+    return config[normalized] || config[baseDomain?.trim()] || [];
+  }
+
+  /**
+   * Format the chat message with credentials and optional alternative domains.
+   * @param {{ username: string, password: string, baseDomain: string }} parsed
+   * @returns {string}
+   */
+  function formatChatMessage(parsed) {
+    if (!parsed || !parsed.username || !parsed.password || !parsed.baseDomain) {
+      log("CHAT-DELIVERY", "formatChatMessage: invalid parsed input");
+      return '';
+    }
+    const { username, password, baseDomain } = parsed;
+    const altDomains = getAlternativeDomains(baseDomain);
+
+    const lines = [
+      'Login Account',
+      `: ${username}`,
+      '',
+      'Login Password',
+      `: ${password}`,
+      '',
+      'Domain',
+      `: ${baseDomain}`,
+    ];
+
+    if (altDomains.length > 0) {
+      for (const alt of altDomains) {
+        lines.push(`alternative domain : ${alt}`);
+      }
+    }
+
+    const message = lines.join('\n');
+    log("CHAT-DELIVERY", `formatChatMessage: ✅ ${altDomains.length} alt domains — ${lines.length} lines`);
+    return message;
+  }
+
+  /**
+   * Safely inject a value into a DOM input and trigger React/Vue state updates.
+   * @param {HTMLInputElement} input
+   * @param {string} value
+   * @returns {boolean} - true if injection succeeded
+   */
+  function safeInjectValue(input, value) {
+    if (!input) return false;
+
+    // Method 1: Native value setter (works for React 17+ and Vue)
+    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    if (nativeSetter) {
+      nativeSetter.call(input, value);
+    } else {
+      input.value = value;
+    }
+
+    // Method 2: Try React's __reactProps onChange (React 17+ fiber)
+    const reactPropsKey = Object.keys(input).find(
+      (k) => k.startsWith("__reactProps") || k.startsWith("__reactInternals")
+    );
+    if (reactPropsKey) {
+      const props = input[reactPropsKey];
+      const onChangeFn = props?.onChange;
+      if (typeof onChangeFn === "function") {
+        const fakeEvent = {
+          target: input, currentTarget: input,
+          type: "input", bubbles: true,
+          nativeEvent: { target: input, data: value },
+          preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
+        };
+        onChangeFn(fakeEvent);
+        log("CHAT-DELIVERY", `[inject] ✅ React onChange via ${reactPropsKey}`);
+      }
+    }
+
+    // Method 3: Try __reactFiber memoizedProps (React 16)
+    const fiberKey = Object.keys(input).find((k) => k.startsWith("__reactFiber"));
+    if (fiberKey) {
+      const onChange = input[fiberKey]?.memoizedProps?.onChange;
+      if (typeof onChange === "function") {
+        const fakeEvent = {
+          target: input, currentTarget: input, type: "input", bubbles: true,
+          nativeEvent: { target: input }, preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
+        };
+        onChange(fakeEvent);
+        log("CHAT-DELIVERY", `[inject] ✅ React onChange via __reactFiber`);
+      }
+    }
+
+    // Method 4: Dispatch native DOM events as belt-and-suspenders
+    input.dispatchEvent(new Event("input",  { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    const landed = input.value;
+    log("CHAT-DELIVERY", `[inject] field="${input.name}" → "${landed.slice(0, 40)}" (${landed.length} chars)`);
+    return landed.length > 0;
+  }
+
+  /**
+   * Fill the three Z2U delivery form fields with parsed M3U credentials.
+   * @param {{ username: string, password: string, baseDomain: string }} parsed
+   * @returns {boolean} - true if all three fields were filled
+   */
+  function fillDeliveryForm(parsed) {
+    if (!parsed) return false;
+
+    const results = [];
+
+    // Field 1: Login Account (Username) — delivery[98]
+    const usernameField = document.querySelector('input[name="delivery[98]"].form-control.required-fields');
+    if (usernameField) {
+      results.push(safeInjectValue(usernameField, parsed.username));
+      log("CHAT-DELIVERY", `✅ Filled delivery[98] (Login Account) with "${parsed.username}"`);
+    } else {
+      warn("CHAT-DELIVERY", `❌ delivery[98] field not found on page`);
+      results.push(false);
+    }
+
+    // Field 2: Login Password — delivery[99]
+    const passwordField = document.querySelector('input[name="delivery[99]"].form-control.required-fields');
+    if (passwordField) {
+      results.push(safeInjectValue(passwordField, parsed.password));
+      log("CHAT-DELIVERY", `✅ Filled delivery[99] (Login Password) with "${parsed.password.slice(0, 4)}..."`);
+    } else {
+      warn("CHAT-DELIVERY", `❌ delivery[99] field not found on page`);
+      results.push(false);
+    }
+
+    // Field 3: Additional Information (Domain) — delivery[113]
+    const domainField = document.querySelector('input[name="delivery[113]"].form-control');
+    if (domainField) {
+      results.push(safeInjectValue(domainField, parsed.baseDomain));
+      log("CHAT-DELIVERY", `✅ Filled delivery[113] (Domain) with "${parsed.baseDomain}"`);
+    } else {
+      warn("CHAT-DELIVERY", `❌ delivery[113] field not found on page`);
+      results.push(false);
+    }
+
+    const allOk = results.every(Boolean);
+    log("CHAT-DELIVERY", `fillDeliveryForm: ${allOk ? '✅ ALL fields filled' : `⚠️  ${results.filter(Boolean).length}/3 filled`}`);
+    return allOk;
+  }
+
+  /**
+   * Find and click the chat trigger link (a.talkSeller) in the order row.
+   * @returns {string | null} - The chat URL if found and clicked
+   */
+  function openChatWindow() {
+    const chatLink = document.querySelector('div.SellerChatAndOtherProduct a.talkSeller');
+    if (!chatLink) {
+      warn("CHAT-DELIVERY", `❌ a.talkSeller not found inside div.SellerChatAndOtherProduct`);
+      return null;
+    }
+    const href = chatLink.getAttribute('href') || '';
+    if (!href) {
+      warn("CHAT-DELIVERY", `❌ a.talkSeller has no href`);
+      return null;
+    }
+    log("CHAT-DELIVERY", `✅ Found chat link: ${href}`);
+    chatLink.click();
+    return href;
+  }
+
+  /**
+   * Send a message via the local Playwright bridge (bridge.py /chat-reply).
+   * Falls back to direct DOM injection if bridge is unavailable.
+   *
+   * @param {string} message - Formatted credential message
+   * @param {string} orderId
+   * @returns {Promise<boolean>}
+   */
+  async function sendChatMessage(message, orderId) {
+    if (!message) return false;
+
+    // Try bridge.py first (real keyboard events, isTrusted=true)
+    try {
+      const resp = await fetch("http://localhost:5000/chat-reply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, orderId }),
+      });
+      if (resp.ok) {
+        const json = await resp.json().catch(() => ({}));
+        if (json.ok) {
+          log("CHAT-DELIVERY", `✅ Bridge chat reply succeeded`);
+          return true;
+        }
+        warn("CHAT-DELIVERY", `Bridge rejected: ${json.error || "unknown"}`);
+      } else {
+        warn("CHAT-DELIVERY", `Bridge HTTP ${resp.status}`);
+      }
+    } catch (e) {
+      warn("CHAT-DELIVERY", `Bridge unreachable: ${e.message} — falling back to direct injection`);
+    }
+
+    // Fallback: direct DOM injection via chat.js logic
+    return sendChatMessageDirect(message);
+  }
+
+  /**
+   * Fallback: inject message directly into the Z2U chat DOM.
+   * @param {string} message
+   * @returns {Promise<boolean>}
+   */
+  async function sendChatMessageDirect(message) {
+    const SIDEBAR_SEL = '[class*="sideBar"], [class*="sidebar"], [class*="chatList"], aside, nav';
+
+    function isSearchField(el) {
+      if (el.type === "search") return true;
+      const ph = (el.placeholder || el.getAttribute("placeholder") || "").toLowerCase();
+      if (/search|find|filter|look|buscar|suche|chercher/i.test(ph)) return true;
+      let node = el;
+      for (let i = 0; i < 5; i++) {
+        if (!node) break;
+        if (/search|filter|find/i.test(node.className || "")) return true;
+        node = node.parentElement;
+      }
+      return false;
+    }
+
+    // Find the chat input (not in sidebar, not a search field)
+    const candidates = Array.from(document.querySelectorAll('textarea, div[contenteditable="true"], input[type="text"]'))
+      .filter(el => el.offsetParent && !el.closest(SIDEBAR_SEL) && !isSearchField(el));
+
+    if (!candidates.length) {
+      warn("CHAT-DELIVERY", `sendChatMessageDirect: no chat input found on page`);
+      return false;
+    }
+
+    // Priority: element with "message" in placeholder
+    const byPlaceholder = candidates.find(el => {
+      const ph = (el.placeholder || el.getAttribute("placeholder") || "").toLowerCase();
+      return /message|type|write|send|reply|chat/i.test(ph);
+    });
+    const chatInput = byPlaceholder || candidates[candidates.length - 1];
+
+    log("CHAT-DELIVERY", `sendChatMessageDirect: targeting <${chatInput.tagName} class="${chatInput.className.slice(0,60)}">`);
+
+    chatInput.focus();
+    chatInput.click();
+    await sleep(100);
+
+    // Use execCommand insertText (routed through native IME → React synthetic events)
+    const execOk = document.execCommand("insertText", false, message);
+    log("CHAT-DELIVERY", `sendChatMessageDirect: execCommand insertText → ${execOk}`);
+
+    chatInput.dispatchEvent(new Event("input",  { bubbles: true }));
+    chatInput.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await sleep(300);
+
+    // Try to find and click the Send button
+    const sendBtn = Array.from(document.querySelectorAll("button, [role='button']"))
+      .find(b => {
+        if (!b.offsetParent || b.closest(SIDEBAR_SEL)) return false;
+        const txt = (b.textContent || "").trim().toLowerCase();
+        const cls = (b.className || "").toLowerCase();
+        return /send|submit|发送|确认/.test(txt + " " + cls);
+      });
+
+    if (sendBtn) {
+      sendBtn.click();
+      log("CHAT-DELIVERY", `✅ Clicked send button`);
+      return true;
+    }
+
+    // Fallback: press Enter
+    const evtOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+    chatInput.dispatchEvent(new KeyboardEvent("keydown",  evtOpts));
+    chatInput.dispatchEvent(new KeyboardEvent("keypress", evtOpts));
+    chatInput.dispatchEvent(new KeyboardEvent("keyup",    evtOpts));
+    log("CHAT-DELIVERY", `✅ Enter key dispatched`);
+    return true;
+  }
+
+  /**
+   * Main chat delivery pipeline for a single order.
+   * Orchestrates: parse M3U → fill form → open chat → send message → confirm delivered.
+   *
+   * @param {string} orderId
+   * @param {string} title
+   * @param {number} quantity
+   * @param {string} m3uUrl - The M3U link from Lfollowers (or extracted from the order page)
+   * @returns {Promise<boolean>}
+   */
+  async function runChatDelivery(orderId, title, quantity, m3uUrl) {
+    log("CHAT-DELIVERY", `🚀 Starting chat delivery | orderId=${orderId} | m3uUrl="${(m3uUrl || "").slice(0, 80)}"`);
+
+    if (!m3uUrl) {
+      err("CHAT-DELIVERY", "No M3U URL provided — cannot extract credentials");
+      return false;
+    }
+
+    // Step 1: Parse M3U URL
+    const parsed = parseM3uUrl(m3uUrl);
+    if (!parsed) {
+      err("CHAT-DELIVERY", `Failed to parse M3U URL: "${m3uUrl.slice(0, 80)}"`);
+      return false;
+    }
+
+    // Step 2: Fill the Z2U delivery form fields
+    const formFilled = fillDeliveryForm(parsed);
+    if (!formFilled) {
+      warn("CHAT-DELIVERY", `Form fill was incomplete — continuing anyway`);
+    }
+    await sleep(800);
+
+    // Step 3: Format the chat message
+    const message = formatChatMessage(parsed);
+    if (!message) {
+      err("CHAT-DELIVERY", "Failed to format chat message");
+      return false;
+    }
+    log("CHAT-DELIVERY", `Message preview:\n${message}`);
+
+    // Step 4: Open the chat window (click a.talkSeller)
+    const chatHref = openChatWindow();
+    if (!chatHref) {
+      warn("CHAT-DELIVERY", `Could not open chat window — will try direct send`);
+    }
+
+    // Wait for the new chat tab/window to load
+    await sleep(3000);
+
+    // Step 5: Send the formatted message via bridge or direct injection
+    const sent = await sendChatMessage(message, orderId);
+    if (!sent) {
+      warn("CHAT-DELIVERY", `Message send failed — chat may not have opened correctly`);
+      return false;
+    }
+
+    log("CHAT-DELIVERY", `✅ Chat message sent for order ${orderId}`);
+    return true;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  LIST PAGE
+  // ══════════════════════════════════════════════════════════════════════════
 
   function normalizeMappingEntry(raw) {
     if (!raw) return null;
@@ -785,29 +1000,6 @@
     return await confirmDeliveredFlow(quantity);
   }
 
-  async function runChatDelivery(formattedCredentials, orderId, quantity) {
-    const buyerEl = Array.from(document.querySelectorAll("*")).find((el) => /buyer|username|contact/i.test(el.textContent || ""));
-    const buyerText = buyerEl?.nextElementSibling?.textContent?.trim() || "";
-    if (!buyerText) {
-      warn("CHAT", "Buyer username not found on page.");
-      return false;
-    }
-    const resp = await fetch("http://localhost:5000/chat-reply", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: buyerText, message: formattedCredentials, orderId }),
-    });
-    if (!resp.ok) {
-      warn("CHAT", `Bridge chat reply failed: HTTP ${resp.status}`);
-      return false;
-    }
-    return await confirmDeliveredFlow(quantity);
-  }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  //  LIST PAGE  (z2u.com/sellOrder/index)
-  // ══════════════════════════════════════════════════════════════════════════
-
   async function runListPage() {
     log("LIST", "📋 Scan started.");
 
@@ -825,16 +1017,14 @@
       return;
     }
 
-    // Normalise: collapse whitespace, trim, remove zero-width/invisible chars.
-    // Used for fuzzy title matching on both list and detail pages.
     function normaliseTitle(s) {
       return (s || "")
-        .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, "") // zero-width / soft-hyphen
+        .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, "")
         .replace(/\s+/g, " ")
         .trim();
     }
     function findMapping(title) {
-      if (mappings[title]) return title; // exact match
+      if (mappings[title]) return title;
       const norm = normaliseTitle(title);
       return mappingKeys.find((k) => normaliseTitle(k) === norm) || null;
     }
@@ -843,27 +1033,23 @@
     log("LIST", `Found ${panels.length} .orderPanel(s).`);
 
     if (!panels.length) {
-      warn("LIST", "No .orderPanel divs found. Page may not have loaded yet or structure changed.");
+      warn("LIST", "No .orderPanel divs found.");
       log("LIST", "Page body preview:", document.body.innerHTML.slice(0, 500));
     }
 
     for (const panel of panels) {
-      // Look for any status badge (danger or warning label)
       const statusBadge = panel.querySelector(".smLabel.dangerLabel, .smLabel.warningLabel, .smLabel");
       const statusText  = statusBadge?.textContent?.trim().toUpperCase() || "(no status)";
       log("LIST", `Panel status: "${statusText}"`);
 
-      // Process NEW ORDER, PREPARING, and DELIVERING states
       const isActionable = statusText.includes("NEW ORDER") || statusText.includes("PREPARING") || statusText.includes("DELIVERING");
       if (!isActionable) continue;
 
-      // Order ID
       const copyBtn              = panel.querySelector("[data-clipboard-text]");
       const orderIdFromClipboard = copyBtn?.getAttribute("data-clipboard-text")?.trim();
       const orderIdFromLink      = panel.querySelector(".o-number a")?.textContent?.trim();
       const orderId              = orderIdFromClipboard || orderIdFromLink;
 
-      // Title — try multiple selectors in priority order
       const titleEl = (
         panel.querySelector(".o-l-col.productInfo a") ||
         panel.querySelector(".productInfo a") ||
@@ -873,9 +1059,8 @@
         panel.querySelector('[class*="productTitle"]')
       );
       const title = titleEl?.textContent?.trim() || "";
-      if (!title) warn("LIST", `Could not extract title for panel — orderId="${panel.querySelector("[data-clipboard-text]")?.getAttribute("data-clipboard-text")?.trim()}". HTML snippet: ${panel.innerHTML.slice(0, 300)}`);
+      if (!title) warn("LIST", `Could not extract title for panel — orderId="${panel.querySelector("[data-clipboard-text]")?.getAttribute("data-clipboard-text")?.trim()}"`);
 
-      // Detail link
       const detailLink = panel.querySelector('.o-l-col.productStatus a[href*="sellOrder"]');
       const detailHref = detailLink?.getAttribute("href") || "";
 
@@ -887,9 +1072,7 @@
         continue;
       }
 
-      // ── Unmapped NEW ORDER: click Prepare and return ─────────────────────
       if (!resolvedListTitle) {
-        // Only act on NEW ORDER status for unmapped offers (PREPARING/DELIVERING leave them alone)
         if (!statusText.includes("NEW ORDER")) {
           log("LIST", `Unmapped order ${orderId} in state "${statusText}" — ignoring.`);
           continue;
@@ -917,10 +1100,6 @@
         return;
       }
 
-      // ── Mapped order: full fulfillment flow ───────────────────────────────
-      if (resolvedListTitle !== title) {
-        warn("LIST", `Fuzzy title match: extracted="${title}" → mapping key="${resolvedListTitle}"`);
-      }
       if (sessionDone.has(orderId)) {
         log("LIST", `Order ${orderId} already in progress this session.`);
         continue;
@@ -936,7 +1115,6 @@
         continue;
       }
 
-      // Store the resolved (mapping-key) title so the detail page finds it immediately
       await chrome.storage.local.set({ pendingOrderId: orderId, pendingTitle: resolvedListTitle });
       log("LIST", `🔗 Navigating to detail page: ${detailHref}`);
       window.location.href = detailHref;
@@ -947,7 +1125,7 @@
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  //  DETAIL PAGE  (z2u.com/sellOrder?order_id=Z...)
+  //  DETAIL PAGE
   // ══════════════════════════════════════════════════════════════════════════
 
   async function runDetailPage() {
@@ -961,13 +1139,10 @@
       return;
     }
 
-    // Give page time to fully render
     log("DETAIL", "Waiting 1s for page to fully render…");
     await sleep(1000);
 
     // ── Prepare-only mode (unmapped orders) ──────────────────────────────────
-    // Set by the list page when an unmapped NEW ORDER is detected.
-    // We just click "Preparing" and go back — no upload, no confirm.
     const { prepareOnly, pendingOrderId: prepareOrderId, pendingUnmappedTitle: unmappedTitle } = await new Promise((r) =>
       chrome.storage.local.get(["prepareOnly", "pendingOrderId", "pendingUnmappedTitle"], r)
     );
@@ -981,12 +1156,7 @@
 
       if (prepBtn) {
         log("DETAIL", `[PREPARE-ONLY] Clicking "Preparing" button…`);
-        // Store return-to-list flag BEFORE clicking.
-        // If clicking Prepare causes Z2U to reload the page, the current async
-        // chain is killed. The new script checks pendingReturnToList at [0b]
-        // and navigates back to sellOrder/index, keeping the pipeline alive.
         await chrome.storage.local.set({ pendingReturnToList: orderId, pendingReturnTitle: unmappedTitle || "" });
-        // If it's an anchor tag, prevent it from navigating away from the page.
         if (prepBtn.tagName === "A") {
           prepBtn.addEventListener("click", (e) => e.preventDefault(), { once: true });
         }
@@ -994,23 +1164,18 @@
         log("DETAIL", `[PREPARE-ONLY] ✅ Clicked.`);
         await sleep(1500);
       } else {
-        warn("DETAIL", `[PREPARE-ONLY] "Preparing" button not found — already past NEW ORDER? Returning to list anyway.`);
-        // Order is already past NEW ORDER; still need to go back to the list.
+        warn("DETAIL", `[PREPARE-ONLY] "Preparing" button not found — already past NEW ORDER?`);
         await chrome.storage.local.set({ pendingReturnToList: orderId, pendingReturnTitle: unmappedTitle || "" });
       }
 
-      // Mark as "prepare-only" and record analytics, then navigate back.
       chrome.runtime.sendMessage({ type: "MARK_PREPARED_ONLY", orderId }).catch(() => {});
       recordAnalytics(orderId, unmappedTitle || "", 1);
       await chrome.storage.local.remove(["pendingReturnToList", "pendingReturnTitle"]);
-      log("DETAIL", `[PREPARE-ONLY] Navigating back to order list.`);
       window.location.href = "https://www.z2u.com/sellOrder/index";
       return;
     }
 
-    // ── [0b] Return to list after Prepare click caused a page reload ───────────
-    // If clicking "Preparing" reloaded the page before window.location.href ran,
-    // pendingReturnToList is still in storage. Navigate back immediately.
+    // ── [0b] Return to list after Prepare click ───────────────────────────────
     const { pendingReturnToList, pendingReturnTitle } = await new Promise((r) =>
       chrome.storage.local.get(["pendingReturnToList", "pendingReturnTitle"], r)
     );
@@ -1024,11 +1189,6 @@
     }
 
     // ── [0] Resume pending Confirm Delivery after page reload ─────────────────
-    // If Z2U navigated/reloaded the page after the bridge uploaded the XLSX,
-    // the previous async chain was killed before confirmDeliveredFlow could run.
-    // We stored pendingConfirmOrderId + pendingConfirmQty to survive that reload.
-    // This check MUST come before [4] bgIsProcessed, which would otherwise
-    // return early (the order IS marked processed to block re-upload).
     const { pendingConfirmOrderId, pendingConfirmQty } = await new Promise((r) =>
       chrome.storage.local.get(["pendingConfirmOrderId", "pendingConfirmQty"], r)
     );
@@ -1040,10 +1200,7 @@
       return;
     }
 
-    // ── [0c] Navigate to list after Confirm Delivered caused a page reload ────
-    // When clicking "Confirm Delivered" triggers a Z2U page reload, the async
-    // chain is killed before [D4] can run. pendingNavigateToList was set just
-    // before the click and survives the reload — navigate back to the order list.
+    // ── [0c] Navigate to list after Confirm Delivered ─────────────────────────
     const { pendingNavigateToList } = await new Promise((r) =>
       chrome.storage.local.get(["pendingNavigateToList"], r)
     );
@@ -1054,9 +1211,7 @@
       return;
     }
 
-    // ── [1] Status check ────────────────────────────────────────────────────
-    // Z2U order flow: NEW ORDER → PREPARING → Delivering → Waiting for confirmation → Completed
-    // We handle all states up to and including Delivering.
+    // ── [1] Status check ──────────────────────────────────────────────────────
     const pageText      = document.body.textContent?.toUpperCase() || "";
     const statusBadge   = document.querySelector(".smLabel.dangerLabel, .smLabel.warningLabel, .smLabel, [class*='statusLabel'], .order-status");
     const badgeText     = statusBadge?.textContent?.trim().toUpperCase() || "not found";
@@ -1074,12 +1229,10 @@
     // ── [2] Title extraction ─────────────────────────────────────────────────
     let title = "";
 
-    // Strip leading ": " that Z2U injects into sibling element text — keep the rest as-is
     function cleanTitle(raw) {
       return (raw || "").replace(/^[\s:]+/, "").trim();
     }
 
-    // Try A: leaf element labelled "Product Title"
     const allEls = Array.from(document.querySelectorAll("*"));
     for (const el of allEls) {
       if (el.childElementCount > 0) continue;
@@ -1093,7 +1246,6 @@
       }
     }
 
-    // Try B: table row containing "product title"
     if (!title) {
       for (const row of document.querySelectorAll("tr, dl dt, .info-row, .detail-row")) {
         if ((row.textContent || "").toLowerCase().includes("product title")) {
@@ -1105,7 +1257,6 @@
       }
     }
 
-    // Try C: any element with class containing "product" + "title"
     if (!title) {
       const el = document.querySelector('[class*="productTitle"], [class*="product-title"], [class*="goodsName"]');
       title = cleanTitle(el?.textContent?.trim() || "");
@@ -1128,7 +1279,6 @@
 
     log("DETAIL", `[3] Mappings available: ${JSON.stringify(Object.keys(mappings))}`);
 
-    // Fuzzy lookup: exact first, then normalised (trim + collapse spaces)
     function normalise(s) { return s.replace(/\s+/g, " ").trim(); }
     let resolvedTitle = title;
     if (!mappings[title]) {
@@ -1142,9 +1292,6 @@
         log("DETAIL", `[3] Available keys: ${JSON.stringify(keys)}`);
         await chrome.storage.local.remove(["pendingOrderId", "pendingTitle"]);
 
-        // Only auto-click Preparing + redirect if the list-page automation
-        // triggered this navigation (prepareOnly flag set).
-        // If the user manually opened the order, leave the page completely alone.
         if (prepareOnly && hasNew) {
           const prepBtn = Array.from(document.querySelectorAll("button, a"))
             .find((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
@@ -1199,28 +1346,15 @@
     }
     log("DETAIL", `[5] Using quantity: ${quantity}`);
 
-    // ── Analytics: fire-and-forget (no fulfillment impact) ────────────────────
     recordAnalytics(orderId, title, quantity);
 
     log("DETAIL", `🚀 Starting fulfillment | orderId=${orderId} | qty=${quantity}`);
     dumpButtons("DETAIL-BEFORE-PREPARING");
 
     try {
-      // ── State machine: detect current stage and jump to the right step ─────
-      // Z2U order stages: NEW ORDER → PREPARING → Delivering → Waiting for confirmation
-      //
-      // Detect by what's visible on the page right now:
-      //   • "Download Bulk Delivery Form Template" link → already in Delivering, skip to [9]
-      //   • "START TRADING" button → PREPARING already clicked, skip to [7]
-      //   • "PREPARING" button → fresh NEW ORDER, do full flow from [6]
-
-      // Find the XLSX delivery template download link.
-      // IMPORTANT: be specific — broad selectors like a[href*="download"] or
-      // a[href*="template"] match Z2U's app-download and unrelated links, producing
-      // false positives that make hasTemplateLink=true and skip PREPARING entirely.
+      // ── State detection ─────────────────────────────────────────────────────
       function findTemplateLink() {
         const allAnchors = Array.from(document.querySelectorAll("a, button"));
-        // Primary: text must say DOWNLOAD + a delivery/template-specific word
         const byText = allAnchors.find((el) => {
           const t = el.textContent?.trim().toUpperCase() || "";
           return t.includes("DOWNLOAD") && (
@@ -1231,8 +1365,6 @@
           );
         });
         if (byText) return byText;
-        // Href-based: only actual XLSX file links — do NOT use href*="download"
-        // or href*="template" as those are too broad
         return document.querySelector('a[href*=".xlsx"], a[download][href*="sell"]');
       }
 
@@ -1243,16 +1375,12 @@
       const hasPrepBtn      = allBtnsNow.some((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
 
       if (templateLinkEl) {
-        log("DETAIL", `[6] Template link found by: text="${templateLinkEl.textContent?.trim()}" href="${templateLinkEl.getAttribute("href")}"`);
+        log("DETAIL", `[6] Template link found: text="${templateLinkEl.textContent?.trim()}" href="${templateLinkEl.getAttribute("href")}"`);
       }
 
       log("DETAIL", `[6] Page state → hasTemplateLink:${hasTemplateLink} | hasStartTrading:${hasStartTrading} | hasPrepBtn:${hasPrepBtn}`);
       dumpButtons("DETAIL-STATE-CHECK");
 
-      // ── WAIT FOR CONFIRMED guard ───────────────────────────────────────────
-      // Use badgeText (the actual status badge element) NOT pageText (the full page body).
-      // pageText includes progress-bar step labels like "Waiting for confirmation"
-      // which could false-match and skip PREPARING on a NEW ORDER.
       const hasWaitForConfirm = badgeText.includes("WAIT FOR CONFIRM") ||
                                 badgeText.includes("WAITING FOR CONFIRM");
       if (hasWaitForConfirm) {
@@ -1261,10 +1389,7 @@
       }
 
       if (!hasTemplateLink) {
-        // Need to advance through PREPARING and/or START TRADING first
-
         if (!hasStartTrading) {
-          // ── [6] Click PREPARING ──────────────────────────────────────────────
           if (!hasPrepBtn) {
             err("DETAIL", "[6] Neither PREPARING nor START TRADING nor template link found.");
             dumpButtons("DETAIL-[6]-STUCK");
@@ -1279,7 +1404,6 @@
           log("DETAIL", "[6] START TRADING already visible — skipping PREPARING.");
         }
 
-        // ── [7] Click START TRADING ────────────────────────────────────────────
         log("DETAIL", "[7] Waiting for START TRADING button (10s)…");
         dumpButtons("DETAIL-BEFORE-START-TRADING");
         const startBtn = await waitForElementByText("button, a", "START TRADING", 10000);
@@ -1293,7 +1417,6 @@
         log("DETAIL", "[7] ✅ Clicked START TRADING. Waiting 2.5s…");
         await sleep(2500);
 
-        // ── [8] Confirm modal ────────────────────────────────────────────────
         log("DETAIL", "[8] Waiting for CONFIRM button in modal (8s)…");
         dumpButtons("DETAIL-AFTER-START-TRADING");
 
@@ -1323,7 +1446,67 @@
         log("DETAIL", "[6-8] Template link already on page — order is in Delivering state. Jumping to download.");
       }
 
-      if ((mappingEntry.deliveryMethod || "file") === "direct") {
+      // ══════════════════════════════════════════════════════════════════════
+      //  DELIVERY METHOD ROUTING
+      // ══════════════════════════════════════════════════════════════════════
+
+      const deliveryMethod = mappingEntry.deliveryMethod || "file";
+      log("DETAIL", `[9] Delivery method: "${deliveryMethod}"`);
+
+      // ── CHAT DELIVERY ──────────────────────────────────────────────────────
+      if (deliveryMethod === "chat") {
+        log("DETAIL", `[9] 🚀 CHAT DELIVERY path — calling prepare-order for M3U link`);
+
+        let m3uUrl = null;
+
+        try {
+          const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
+          log("DETAIL", `[9] prepare-order response:`, JSON.stringify(prepared).slice(0, 500));
+
+          // The Lfollowers response for chat delivery contains an M3U URL
+          // It could be in: delivered_data, m3u_url, url, data, or the formattedCredentials field
+          const raw = prepared?.delivered_data || prepared?.m3u_url || prepared?.url || prepared?.data || prepared?.formattedCredentials || "";
+
+          // Try to extract M3U URL from the raw response
+          if (typeof raw === 'string' && raw.includes('get.php')) {
+            // Direct M3U URL in delivered_data
+            const match = raw.match(/https?:\/\/[^\s'"<>]+get\.php\?[^'"<>\s]+/i);
+            if (match) m3uUrl = match[0].split(/\s/)[0];
+          } else if (typeof raw === 'string' && raw.includes('.m3u')) {
+            const match = raw.match(/https?:\/\/[^\s'"<>]+\.m3u[8]?[^\s'"<>]*/i);
+            if (match) m3uUrl = match[0].split(/\s/)[0];
+          } else if (prepared?.m3u_url) {
+            m3uUrl = prepared.m3u_url;
+          } else if (prepared?.url) {
+            m3uUrl = prepared.url;
+          }
+
+          log("DETAIL", `[9] M3U URL extracted: "${(m3uUrl || "").slice(0, 80)}"`);
+        } catch (e) {
+          err("DETAIL", `[9] prepare-order failed: ${e.message}`);
+        }
+
+        if (!m3uUrl) {
+          warn("DETAIL", `[9] No M3U URL found in Lfollowers response — cannot proceed with chat delivery`);
+          return;
+        }
+
+        const chatOk = await runChatDelivery(orderId, resolvedTitle, quantity, m3uUrl);
+        if (chatOk) {
+          await bgMarkProcessed(orderId);
+          log("DETAIL", `[11] ✅ Chat delivery completed for ${orderId}.`);
+        } else {
+          warn("DETAIL", "[11] Chat delivery did not complete successfully.");
+        }
+
+        log("DETAIL", "↩ Returning to order list in 3s…");
+        await sleep(3000);
+        window.location.href = "/sellOrder/index";
+        return;
+      }
+
+      // ── DIRECT DELIVERY ────────────────────────────────────────────────────
+      if (deliveryMethod === "direct") {
         log("DETAIL", "[9] deliveryMethod=direct — preparing payload (no XLSX upload).");
         const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
         const ok = await runDirectDelivery(prepared.accounts || [], quantity);
@@ -1334,20 +1517,8 @@
         return;
       }
 
-      if ((mappingEntry.deliveryMethod || "file") === "chat") {
-        log("DETAIL", "[9] deliveryMethod=chat — preparing payload + bridge chat send.");
-        const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
-        const ok = await runChatDelivery(prepared.formattedCredentials || "", orderId, quantity);
-        if (ok) {
-          await bgMarkProcessed(orderId);
-          log("DETAIL", `[11] ✅ Chat delivery completed for ${orderId}.`);
-        }
-        return;
-      }
-
-      // ── [9] Template download ──────────────────────────────────────────────
+      // ── FILE DELIVERY (default) ────────────────────────────────────────────
       log("DETAIL", "[9] Looking for template download link…");
-      // Re-query after any page changes (clicking START TRADING may re-render)
       const templateLink = findTemplateLink();
       if (!templateLink) {
         err("DETAIL", "[9] Template download link NOT found.");
@@ -1361,7 +1532,6 @@
       const { bytes: templateBlob, filename: templateFilename } = await downloadBlob(templateUrl);
       log("DETAIL", `[9] Original template filename: "${templateFilename}"`);
 
-      // ── [10] Backend ───────────────────────────────────────────────────────
       log("DETAIL", "[10] Sending to backend…");
       let filledBytes;
       try {
@@ -1378,7 +1548,6 @@
         return;
       }
 
-      // ── [11] Upload + confirm delivered ───────────────────────────────────
       log("DETAIL", "[11] Uploading filled file…");
       const uploaded = await uploadAndConfirm(filledBytes, templateFilename, quantity);
       if (uploaded) {
@@ -1392,7 +1561,6 @@
       err("DETAIL", `Unhandled exception:`, e);
     }
 
-    // ── Return to list page to pick up next order ─────────────────────────
     log("DETAIL", "↩ Returning to order list in 3s to process next order…");
     await sleep(3000);
     window.location.href = "/sellOrder/index";
@@ -1401,8 +1569,6 @@
   // ── Entry point ───────────────────────────────────────────────────────────
 
   function init() {
-    // Check pause flag — network interceptor (injected.js) always runs regardless,
-    // so manual uploads are still captured even while automation is paused.
     chrome.storage.local.get(["autoPaused"], ({ autoPaused }) => {
       if (autoPaused) {
         log("INIT", "⏸ Auto-processing is PAUSED. Network capture still active. Resume from popup.");

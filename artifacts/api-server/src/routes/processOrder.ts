@@ -82,7 +82,7 @@ function getApiKey(): string {
 }
 
 function parseAccountLine(line: string, separator?: string): ParsedAccount {
-  const parts = separator 
+  const parts = separator
     ? line.split(separator).map((p) => p.trim()).filter(Boolean)
     : line.split(/[|:;\/\s]+/).map((p) => p.trim()).filter(Boolean);
   return { parts, raw: line.trim() };
@@ -113,6 +113,78 @@ async function purchaseAccounts(productId: string, qty: number, separator?: stri
     .map((l) => l.trim())
     .filter(Boolean)
     .map((line) => parseAccountLine(line, separator));
+}
+
+/**
+ * Purchase an M3U subscription from Lfollowers.
+ * Returns the raw M3U URL from the delivered_data field.
+ */
+async function purchaseM3uSubscription(productId: string): Promise<string> {
+  const key = getApiKey();
+  logger.info({ productId }, "Calling Lfollowers for M3U subscription");
+
+  const lfResponse = await axios.post(LFOLLOWERS_API_URL, {
+    key,
+    action: "purchase",
+    product_id: productId,
+    quantity: 1,
+  });
+
+  const purchaseResult = lfResponse.data as {
+    delivered_data?: string;
+    m3u_url?: string;
+    url?: string;
+    error?: string;
+  };
+
+  logger.info({ productId, lfResponse: purchaseResult }, "Lfollowers M3U response");
+
+  if (purchaseResult.error) {
+    throw new Error(`Lfollowers error: ${purchaseResult.error}`);
+  }
+
+  // Priority 1: explicit m3u_url field
+  if (purchaseResult.m3u_url) {
+    logger.info({ m3uUrl: purchaseResult.m3u_url }, "M3U URL from explicit field");
+    return purchaseResult.m3u_url;
+  }
+
+  // Priority 2: explicit url field
+  if (purchaseResult.url) {
+    logger.info({ url: purchaseResult.url }, "M3U URL from url field");
+    return purchaseResult.url;
+  }
+
+  // Priority 3: extract from delivered_data (common for many Lfollowers products)
+  const delivered = purchaseResult.delivered_data ?? "";
+
+  // Try to find an M3U URL pattern in the delivered data
+  const m3uPatterns = [
+    /https?:\/\/[^\s'"<>]+get\.php\?[^'"<>\s]+/i,
+    /https?:\/\/[^\s'"<>]+\.m3u[8]?[^\s'"<>]*/i,
+    /https?:\/\/[^\s'"<>]+\/get\.php\?[^'"<>\s]+username=[^\s'"<>]+/gi,
+  ];
+
+  for (const pattern of m3uPatterns) {
+    const matches = delivered.match(pattern);
+    if (matches && matches.length > 0) {
+      const candidate = matches[0].split(/\s/)[0];
+      if (candidate.includes("get.php") || candidate.includes(".m3u")) {
+        logger.info({ m3uUrl: candidate }, "M3U URL extracted from delivered_data");
+        return candidate;
+      }
+    }
+  }
+
+  // Fallback: return the raw delivered_data if it looks like a URL
+  if (delivered.startsWith("http") && (delivered.includes("get.php") || delivered.includes(".m3u"))) {
+    logger.info({ deliveredData: delivered }, "Using raw delivered_data as M3U URL");
+    return delivered.split(/\s/)[0];
+  }
+
+  throw new Error(
+    `No M3U URL found in Lfollowers response. delivered_data="${delivered.slice(0, 200)}"`,
+  );
 }
 
 function escapeXml(s: string): string {

@@ -90,7 +90,6 @@ def _find_upload_btn(page):
     """
     Scan for any visible Upload-Form button variant.
     Returns (element, matched_text) or (None, None).
-    Tries <a>, <button>, and [role=button] with several text variants.
     """
     TEXT_VARIANTS = [
         "Upload Form",
@@ -156,7 +155,6 @@ def _get_or_open_z2u_tab(browser, page_url: str):
     page in the same context and navigate to page_url so the session is reused.
     Returns (context, page).
     """
-    # contexts[0] is the user's permanent profile (has Z2U login cookies)
     ctx = browser.contexts[0] if browser.contexts else None
     if ctx is None:
         return None, None
@@ -182,18 +180,6 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
     """
     Connect to Chrome via CDP, navigate directly to the order detail page,
     then upload the filled XLSX using Playwright's expect_file_chooser().
-
-    Key design decisions
-    --------------------
-    • We ALWAYS call page.goto(page_url) so we are guaranteed to be on the
-      correct page — even if the extension's background alarm already navigated
-      the tab back to /sellOrder/index while we were waiting.
-    • We scroll through the page in 3 passes so the "Upload Form" button is
-      exposed even when it sits below the fold.
-    • We dump every visible button/link text to the terminal when the button
-      is not found, so you can copy the exact label and fix the selector.
-    • expect_file_chooser() intercepts the native OS file-picker that Z2U's
-      button triggers — set_input_files() on the hidden <input> does not work.
     """
     with sync_playwright() as pw:
         # ── Connect to Chrome ─────────────────────────────────────────────
@@ -208,11 +194,9 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
                 ),
             }
 
-        # ── List all tabs for diagnostics ─────────────────────────────────
         all_urls = _all_tab_urls(browser)
         print(f"[bridge] CDP Chrome has {len(all_urls)} tab(s): {all_urls}")
 
-        # ── Get (or create) the right Z2U tab using contexts[0] ──────────
         _ctx, page = _get_or_open_z2u_tab(browser, page_url)
         if not page:
             return {
@@ -233,111 +217,99 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
         except Exception:
             pass
 
-        try:
-            # ── Step 1: Navigate directly to the order detail page ────────
-            # This is the critical fix: always go to page_url so the tab is
-            # guaranteed to be showing the order that needs uploading, not the
-            # list page or some previously-navigated page.
-            if page_url:
-                if page.url != page_url:
-                    print("[bridge] Navigating to order page…")
-                    page.goto(page_url, wait_until="domcontentloaded", timeout=25000)
-                    time.sleep(2.5)  # wait for React to render order detail
-                else:
-                    print("[bridge] Already on the correct page — waiting for render…")
-                    time.sleep(1.0)
+        # ── Step 1: Navigate directly to the order detail page ────────────
+        if page_url:
+            if page.url != page_url:
+                print("[bridge] Navigating to order page…")
+                page.goto(page_url, wait_until="domcontentloaded", timeout=25000)
+                time.sleep(2.5)
             else:
-                print("[bridge] ⚠ No page_url provided — using whatever tab is open.")
+                print("[bridge] Already on the correct page — waiting for render…")
                 time.sleep(1.0)
+        else:
+            print("[bridge] ⚠ No page_url provided — using whatever tab is open.")
+            time.sleep(1.0)
 
-            print(f"[bridge] Current URL after navigation: {page.url}")
-            _dump_page_state(page, "after-navigate")
+        print(f"[bridge] Current URL after navigation: {page.url}")
+        _dump_page_state(page, "after-navigate")
 
-            # ── Step 2: Find the Upload button (scroll if needed) ─────────
-            upload_el, matched_text = _find_upload_btn(page)
+        # ── Step 2: Find the Upload button (scroll if needed) ─────────────
+        upload_el, matched_text = _find_upload_btn(page)
 
-            if not upload_el:
-                print("[bridge] Button not found in viewport — scrolling to expose it…")
-                for scroll_frac in [0.33, 0.66, 1.0]:
-                    page.evaluate(
-                        f"window.scrollTo(0, document.body.scrollHeight * {scroll_frac})"
-                    )
-                    time.sleep(0.8)
-                    upload_el, matched_text = _find_upload_btn(page)
-                    if upload_el:
-                        print(f"[bridge] Found after scroll ({int(scroll_frac*100)}%)")
-                        break
+        if not upload_el:
+            print("[bridge] Button not found in viewport — scrolling to expose it…")
+            for scroll_frac in [0.33, 0.66, 1.0]:
+                page.evaluate(
+                    f"window.scrollTo(0, document.body.scrollHeight * {scroll_frac})"
+                )
+                time.sleep(0.8)
+                upload_el, matched_text = _find_upload_btn(page)
+                if upload_el:
+                    print(f"[bridge] Found after scroll ({int(scroll_frac*100)}%)")
+                    break
 
-            if not upload_el:
-                _dump_page_state(page, "upload-btn-not-found")
-                return {
-                    "ok": False,
-                    "error": (
-                        "Selector Not Found — 'Upload Form' button not visible after "
-                        "navigation + 3-pass page scroll. "
-                        "Check the PAGE DUMP lines printed above in the bridge terminal "
-                        "to see what buttons Z2U is actually showing on this page."
-                    ),
-                }
+        if not upload_el:
+            _dump_page_state(page, "upload-btn-not-found")
+            return {
+                "ok": False,
+                "error": (
+                    "Selector Not Found — 'Upload Form' button not visible after "
+                    "navigation + 3-pass page scroll. "
+                    "Check the PAGE DUMP lines printed above in the bridge terminal "
+                    "to see what buttons Z2U is actually showing on this page."
+                ),
+            }
 
-            selectors = dict(DEFAULT_SELECTORS)
+        selectors = dict(DEFAULT_SELECTORS)
 
-            print(f"[bridge] ✅ Found upload button: '{matched_text}'")
-            upload_el.scroll_into_view_if_needed()
-            time.sleep(0.4)
+        print(f"[bridge] ✅ Found upload button: '{matched_text}'")
+        upload_el.scroll_into_view_if_needed()
+        time.sleep(0.4)
 
-            # ── Step 3: Click "Upload Form" → this opens the Upload modal ─
-            # The modal contains a "Select File" button that triggers the
-            # native OS file chooser.  We must click "Upload Form" first,
-            # wait for the modal, then intercept the file chooser on
-            # "Select File" — NOT on the "Upload Form" button itself.
-            print("[bridge] Clicking 'Upload Form' to open the upload modal…")
-            upload_el.click()
-            time.sleep(1.2)  # let the modal animate in
+        # ── Step 3: Click "Upload Form" → open the upload modal ───────────
+        print("[bridge] Clicking 'Upload Form' to open the upload modal…")
+        upload_el.click()
+        time.sleep(1.2)
 
-            # 1. Wait for the file input to exist in the DOM
+        try:
+            print(f"[bridge] Locating the file input ({selectors['fileInput']})...")
+            page.wait_for_selector(selectors["fileInput"], state="attached", timeout=5000)
+            page.set_input_files(selectors["fileInput"], tmp_path)
+            print(f"[bridge] ✅ File attached to {selectors['fileInput']}: {tmp_path}")
+        except Exception as e:
+            print(f"[bridge] ❌ Could not find file input, trying fallback click: {e}")
+            healed = _request_heal(page, "fileInput missing", selectors)
+            selectors.update({k: v for k, v in healed.items() if isinstance(v, str) and v.strip()})
             try:
-                print(f"[bridge] Locating the file input ({selectors['fileInput']})...")
-                page.wait_for_selector(selectors["fileInput"], state="attached", timeout=5000)
-
-                # 2. Attach the file directly to the input using its ID
+                page.wait_for_selector(selectors["fileInput"], state="attached", timeout=3500)
                 page.set_input_files(selectors["fileInput"], tmp_path)
-                print(f"[bridge] ✅ File attached to {selectors['fileInput']}: {tmp_path}")
+                print(f"[bridge] ✅ Healed selector worked for file input: {selectors['fileInput']}")
+            except Exception:
+                with page.expect_file_chooser() as fc_info:
+                    page.click(selectors.get("selectFileButton", "button:has-text('Select File')"), force=True)
+                file_chooser = fc_info.value
+                file_chooser.set_files(tmp_path)
 
-            except Exception as e:
-                print(f"[bridge] ❌ Could not find file input, trying fallback click: {e}")
-                healed = _request_heal(page, "fileInput missing", selectors)
-                selectors.update({k: v for k, v in healed.items() if isinstance(v, str) and v.strip()})
-                try:
-                    page.wait_for_selector(selectors["fileInput"], state="attached", timeout=3500)
-                    page.set_input_files(selectors["fileInput"], tmp_path)
-                    print(f"[bridge] ✅ Healed selector worked for file input: {selectors['fileInput']}")
-                except Exception:
-                    with page.expect_file_chooser() as fc_info:
-                        page.click(selectors.get("selectFileButton", "button:has-text('Select File')"), force=True)
-                    file_chooser = fc_info.value
-                    file_chooser.set_files(tmp_path)
+        # ── Step 4: The "Z2U Wait" ─────────────────────────────────────────
+        print("[bridge] Waiting 5s for Z2U extension validation...")
+        time.sleep(5)
 
-            # 3. CRITICAL: The "Z2U Wait"
-            print("[bridge] Waiting 5s for Z2U extension validation...")
-            time.sleep(5)
-
-            # 4. The Final Submit
-            print(f"[bridge] Clicking submit ({selectors['submitButton']})...")
+        # ── Step 5: The Final Submit ───────────────────────────────────────
+        print(f"[bridge] Clicking submit ({selectors['submitButton']})...")
+        try:
+            page.click(selectors["submitButton"], force=True)
+            print("[bridge] ✅ SUBMIT clicked!")
+            return {"ok": True}
+        except Exception as e:
+            print(f"[bridge] ❌ Final Submit failed: {e}")
+            healed = _request_heal(page, "submitButton missing", selectors)
+            selectors.update({k: v for k, v in healed.items() if isinstance(v, str) and v.strip()})
             try:
-                page.click(selectors["submitButton"], force=True)
-                print("[bridge] ✅ SUBMIT clicked!")
-                return {"ok": True}
-            except Exception as e:
-                print(f"[bridge] ❌ Final Submit failed: {e}")
-                healed = _request_heal(page, "submitButton missing", selectors)
-                selectors.update({k: v for k, v in healed.items() if isinstance(v, str) and v.strip()})
-                try:
-                    page.click(selectors["submitButton"], force=True, timeout=4000)
-                    print(f"[bridge] ✅ Healed submit selector worked: {selectors['submitButton']}")
-                    return {"ok": True, "healed": True, "selectors": selectors}
-                except Exception as e2:
-                    return {"ok": False, "error": str(e2), "selectors": selectors}
+                page.click(selectors["submitButton"], force=True, timeout=4000)
+                print(f"[bridge] ✅ Healed submit selector worked: {selectors['submitButton']}")
+                return {"ok": True, "healed": True, "selectors": selectors}
+            except Exception as e2:
+                return {"ok": False, "error": str(e2), "selectors": selectors}
 
         except Exception:
             tb = traceback.format_exc()
@@ -360,11 +332,7 @@ def cors(resp):
 def debug_tabs():
     """
     Visit http://localhost:5000/debug/tabs to instantly see every tab open in
-    the CDP Chrome.  Uses Chrome's built-in /json/list endpoint — no Playwright
-    needed, responds in milliseconds.
-
-    If your Z2U order page is NOT in the list, the bridge is watching a
-    different Chrome instance than the one your extension is running in.
+    the CDP Chrome.
     """
     json_url = f"{CDP_URL}/json/list"
     try:
@@ -423,9 +391,6 @@ def upload():
     if not file_bytes_list:
         return jsonify({"ok": False, "error": "No fileBytes in request"}), 400
 
-    # Write to project directory (same folder as bridge.py) so the path is
-    # simple and predictable — avoids /var/folders/ macOS temp paths that
-    # some validators reject.
     current_dir = os.path.dirname(os.path.abspath(__file__))
     tmp_path = os.path.join(current_dir, filename)
     try:
@@ -456,18 +421,16 @@ def upload():
 def find_chat_page(browser):
     """Return the Playwright Page for the open Z2U Chat page."""
     all_pages = [p for ctx in browser.contexts for p in ctx.pages]
-    # Exact Chat URL
     for page in all_pages:
         if "z2u.com/Chat" in page.url or "z2u.com/chat" in page.url:
             return page
-    # Fallback: any z2u tab
     for page in all_pages:
         if "z2u.com" in page.url:
             return page
     return None
 
 
-def do_chat_reply(username: str, message: str) -> dict:
+def do_chat_reply(username: str, message: str, order_id: str = "") -> dict:
     """
     Connect to Chrome via CDP, find the Z2U Chat tab, click the
     correct conversation sidebar item, then type the message using
@@ -500,7 +463,6 @@ def do_chat_reply(username: str, message: str) -> dict:
             # ── Click the sidebar item for this username ───────────────────
             if username:
                 clicked = False
-                # Try class-based selectors first
                 sidebar_sels = [
                     "[class*='chatListItem']",
                     "[class*='chatItem']",
@@ -530,11 +492,9 @@ def do_chat_reply(username: str, message: str) -> dict:
                 if not clicked:
                     print(f"[bridge/chat] ⚠ Sidebar item for '{username}' not found — trying to type in current open chat.")
 
-                time.sleep(0.8)  # wait for chat panel to render
+                time.sleep(0.8)
 
             # ── Find the message input ─────────────────────────────────────
-            # Priority: textarea → contenteditable → text input
-            # Must NOT be inside the sidebar / search bar.
             SIDEBAR_SEL = (
                 "[class*='sideBar'], [class*='sidebar'], [class*='chatList'], "
                 "[class*='chat-list'], aside, nav"
@@ -549,7 +509,6 @@ def do_chat_reply(username: str, message: str) -> dict:
                 candidates = page.locator(sel).all()
                 for c in candidates:
                     try:
-                        # Skip sidebar elements
                         in_sidebar = page.evaluate(
                             """(el) => !!el.closest(
                                 "[class*='sideBar'],[class*='sidebar'],[class*='chatList'],aside,nav"
@@ -558,7 +517,6 @@ def do_chat_reply(username: str, message: str) -> dict:
                         )
                         if in_sidebar:
                             continue
-                        # Skip search-like inputs
                         ph = (c.get_attribute("placeholder") or "").lower()
                         if any(w in ph for w in ["search", "find", "filter"]):
                             continue
@@ -603,14 +561,12 @@ def do_chat_reply(username: str, message: str) -> dict:
                         print("[bridge/chat] Clicked Send button.")
                         break
 
-                # Text-based fallback
                 if not send_clicked:
                     all_btns = page.locator("button:visible").all()
                     for b in all_btns:
                         try:
                             txt = b.inner_text(timeout=300).strip().lower()
                             if txt in ("send", "发送", "확인", "submit"):
-                                # Make sure it's NOT in the sidebar
                                 in_side = page.evaluate(
                                     "(el) => !!el.closest('[class*=\"chatList\"],aside,nav')",
                                     b.element_handle(),
@@ -623,7 +579,7 @@ def do_chat_reply(username: str, message: str) -> dict:
                         except Exception:
                             continue
             except Exception:
-                pass  # Send button not found / already dismissed — that's fine
+                pass
 
             print(f"[bridge/chat] ✅ Reply sent to '{username}': '{message[:60]}'")
             return {"ok": True, "message": f"Reply sent to {username!r} via Playwright keyboard."}
@@ -652,7 +608,7 @@ def chat_reply():
         return jsonify({"ok": False, "error": "No username provided"}), 400
 
     print(f"\n[bridge/chat] ▶ Chat-reply request — username={username!r}  orderId={order_id!r}  msg={message[:80]!r}")
-    result = do_chat_reply(username, message)
+    result = do_chat_reply(username, message, order_id)
     status = "✅" if result["ok"] else "❌"
     print(f"[bridge/chat] {status} Result: {result}")
     return jsonify(result)
@@ -669,7 +625,7 @@ def _startup_chrome_check():
     """
     At startup, hit Chrome's /json/list endpoint and print a summary of open
     tabs.  This immediately tells the user whether the bridge can see Chrome
-    and whether any Z2U tabs are open — without any Playwright overhead.
+    and whether any Z2U tabs are open.
     """
     try:
         with urllib.request.urlopen(f"{CDP_URL}/json/list", timeout=3) as r:
