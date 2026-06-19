@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "Z2U Auto Fulfiller",
+  "version": "1.1.0",
+  "description": "Automatically monitors Z2U new orders and fulfills them via Lfollowers backend.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "downloads",
+    "scripting",
+    "activeTab",
+    "webRequest",
+    "debugger",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://z2u.com/*",
+    "https://www.z2u.com/*",
+    "http://localhost:*/*",
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://z2u.com/sellOrder*",
+        "https://www.z2u.com/sellOrder*"
+      ],
+      "js": ["injected.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://z2u.com/sellOrder*",
+        "https://www.z2u.com/sellOrder*"
+      ],
+      "js": ["config.js", "content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://z2u.com/Chat*",
+        "https://www.z2u.com/Chat*"
+      ],
+      "js": ["chat.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Z2U Auto Fulfiller"
+  },
+  "web_accessible_resources": [{
+    "resources": ["injected.js"],
+    "matches": ["https://z2u.com/*", "https://www.z2u.com/*"]
+  }]
+}

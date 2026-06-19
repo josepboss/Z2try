@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Z2U Assistant — Sandbox</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;padding:1.5rem}
+    h1{font-size:1.25rem;font-weight:700;margin-bottom:1rem;color:#f8fafc}
+    .card{background:#1e293b;border:1px solid #334155;border-radius:.75rem;padding:1.25rem;margin-bottom:1.25rem}
+    h2{font-size:1rem;font-weight:600;margin-bottom:.75rem;color:#cbd5e1}
+    label{display:block;font-size:.8rem;color:#94a3b8;margin-bottom:.3rem;margin-top:.75rem}
+    input,select,textarea{width:100%;padding:.5rem .75rem;background:#0f172a;border:1px solid #334155;border-radius:.375rem;color:#e2e8f0;font-size:.875rem}
+    input:focus,select:focus,textarea:focus{outline:2px solid #6366f1;border-color:#6366f1}
+    button{margin-top:1rem;padding:.5rem 1.25rem;background:#6366f1;color:#fff;border:none;border-radius:.375rem;cursor:pointer;font-size:.875rem;font-weight:500}
+    button:hover{background:#4f46e5}
+    button:disabled{opacity:.35;cursor:default}
+    .status{margin-top:.75rem;padding:.5rem .75rem;border-radius:.375rem;font-size:.85rem}
+    .ok{background:#064e3b;color:#6ee7b7}
+    .err{background:#7f1d1d;color:#fca5a5}
+    .info{background:#1e3a8a;color:#93c5fd}
+    .field-row{display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem}
+    .field-row label{margin:0;font-size:.8rem;color:#cbd5e1;flex:1}
+    .field-row input[type="text"]{flex:2}
+    .field-row button{flex:0;padding:.3rem .6rem;font-size:.75rem;background:#dc2626}
+    .field-row button:hover{background:#b91c1c}
+    .hint{font-size:.75rem;color:#64748b;margin-top:.25rem}
+    .mapping-section{margin-top:1rem;padding:1rem;background:#0f172a;border-radius:.5rem}
+    .mapping-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem}
+    .mapping-header span{font-size:.9rem;font-weight:600;color:#cbd5e1}
+    .add-mapping-btn{margin-top:.5rem;width:100%;background:#059669}
+    .add-mapping-btn:hover{background:#047857}
+    .separator-options{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem}
+    .separator-options label{display:flex;align-items:center;gap:.25rem;margin:0;font-size:.8rem;color:#cbd5e1}
+    .separator-options input[type="radio"]{width:auto}
+    .custom-sep{display:none;margin-top:.5rem}
+    .custom-sep.show{display:block}
+    .config-row{display:flex;gap:.5rem;margin-bottom:.5rem}
+    .config-row input{flex:1}
+    .config-row button{flex:0;padding:.4rem .8rem;font-size:.8rem}
+  </style>
+</head>
+<body>
+  <h1>🎨 Z2U Assistant — Sandbox</h1>
+  <p class="hint">Test data injection using the same XML surgery logic as production</p>
+
+  <div class="card">
+    <h2>⚙️ Backend Configuration</h2>
+    <div class="config-row">
+      <input type="text" id="serverUrl" placeholder="http://YOUR_VPS_IP:3005 or https://your-domain.com" />
+      <button id="saveConfigBtn">Save & Test</button>
+    </div>
+    <p class="hint">Enter your backend server URL. The sandbox sends the template + data to your backend which performs XML surgery and returns the filled file.</p>
+    <div id="configStatus" class="status info">Not configured — enter your VPS URL above</div>
+  </div>
+
+  <div class="card">
+    <h2>1. Upload Template</h2>
+    <input type="file" id="templateInput" accept=".xlsx" />
+    <p class="hint">Select a blank Z2U delivery template (.xlsx). The file is sent to your backend which reads its structure.</p>
+    <div id="templateInfo" class="hint"></div>
+  </div>
+
+  <div class="card">
+    <h2>2. Paste Data</h2>
+    <label>Data Rows (one row per line)</label>
+    <textarea id="dataInput" rows="8" placeholder="user1|pass1|email1@example.com|epass1&#10;user2:pass2:email2@test.com:epass2&#10;user3;pass3;email3@domain.com;epass3"></textarea>
+    
+    <label>Separator</label>
+    <div class="separator-options">
+      <label><input type="radio" name="separator" value="|" checked> Pipe (|)</label>
+      <label><input type="radio" name="separator" value=","> Comma (,)</label>
+      <label><input type="radio" name="separator" value=";"> Semicolon (;)</label>
+      <label><input type="radio" name="separator" value=":"> Colon (:)</label>
+      <label><input type="radio" name="separator" value=" "> Space</label>
+      <label><input type="radio" name="separator" value="custom"> Custom</label>
+    </div>
+    <div class="custom-sep" id="customSepContainer">
+      <input type="text" id="customSeparator" placeholder="Enter custom separator character(s)" />
+    </div>
+    <p class="hint">Format: field1 separator field2 separator field3... (e.g., username|password|email|email_password)</p>
+  </div>
+
+  <div class="card">
+    <h2>3. Column Mapping</h2>
+    <p class="hint">Map each data field to an Excel column letter (A, B, C, ..., AA, AB, ...). The backend uses these mappings to inject data via XML surgery.</p>
+    
+    <div class="mapping-section">
+      <div class="mapping-header">
+        <span>Field → Column</span>
+        <button type="button" id="addMappingBtn">+ Add Field</button>
+      </div>
+      <div id="mappingList" class="mapping-list">
+        <!-- Dynamic mapping rows will appear here -->
+      </div>
+    </div>
+  </div>
+
+  <button id="processBtn">Generate Test File</button>
+  <div id="status" class="status info">Ready to process</div>
+
+  <script src="sandbox.js"></script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Z2U Auto Fulfiller</title>
+  <style>
+    body {
+      width: 360px;
+      font-family: system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      margin: 0;
+      padding: 1rem;
+    }
+    h1 { font-size: 1rem; font-weight: 700; margin-bottom: .25rem; }
+    .sub { font-size: .75rem; color: #94a3b8; margin-bottom: 1rem; }
+    label { display: block; font-size: .75rem; color: #94a3b8; margin-top: .75rem; margin-bottom: .25rem; }
+    .backend-row {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      margin-bottom: .4rem;
+    }
+    .backend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .backend-dot.checking { background: #64748b; }
+    .backend-dot.ok { background: #22c55e; }
+    .backend-dot.error { background: #ef4444; }
+    .backend-name { font-size: .75rem; font-weight: 600; color: #cbd5e1; min-width: 90px; }
+    .backend-url { font-size: .7rem; color: #64748b; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .backend-status { font-size: .65rem; padding: .1rem .4rem; border-radius: .25rem; }
+    .backend-status.ok { background: #064e3b; color: #6ee7b7; }
+    .backend-status.error { background: #7f1d1d; color: #fca5a5; }
+    .backend-status.checking { background: #1e293b; color: #64748b; }
+    .divider { border: none; border-top: 1px solid #334155; margin: .75rem 0; }
+    a { color: #818cf8; font-size: .75rem; text-decoration: none; display: block; margin-top: .5rem; }
+    a:hover { text-decoration: underline; }
+    input {
+      width: 100%;
+      padding: .4rem .6rem;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: .375rem;
+      color: #e2e8f0;
+      font-size: .8rem;
+      box-sizing: border-box;
+    }
+    button {
+      width: 100%;
+      margin-top: .75rem;
+      padding: .45rem;
+      background: #6366f1;
+      color: #fff;
+      border: none;
+      border-radius: .375rem;
+      cursor: pointer;
+      font-size: .85rem;
+      font-weight: 500;
+    }
+    button:hover { background: #4f46e5; }
+    button.pg { background: #f59e0b; font-size: .8rem; padding: .35rem; }
+    button.pg:hover { background: #d97706; }
+    button.danger { background: #ef4444; }
+    button.danger:hover { background: #dc2626; }
+    button.reset { background: #64748b; font-size: .8rem; padding: .35rem; }
+    button.reset:hover { background: #475569; }
+    button.capture { background: #0ea5e9; }
+    button.capture:hover { background: #0284c7; }
+    button.clear { background: #1e293b; border: 1px solid #334155; font-size: .8rem; padding: .35rem; }
+    button.clear:hover { background: #334155; }
+    #msg { font-size: .75rem; margin-top: .5rem; color: #6ee7b7; min-height: 1em; }
+    .config-note { font-size: .65rem; color: #64748b; margin-top: .5rem; line-height: 1.4; }
+    .config-note code { color: #94a3b8; background: #1e293b; padding: .1rem .3rem; border-radius: .2rem; }
+  </style>
+</head>
+<body>
+  <h1>Z2U Auto Fulfiller</h1>
+  <p class="sub">Dual-backend auto-routing — no manual switching needed</p>
+
+  <label>Backend Status</label>
+  <div id="backendList">
+    <div class="backend-row">
+      <div class="backend-dot checking" id="dot0"></div>
+      <span class="backend-name" id="name0">Backend A</span>
+      <span class="backend-url" id="url0">—</span>
+      <span class="backend-status checking" id="status0">checking…</span>
+    </div>
+    <div class="backend-row">
+      <div class="backend-dot checking" id="dot1"></div>
+      <span class="backend-name" id="name1">Backend B</span>
+      <span class="backend-url" id="url1">—</span>
+      <span class="backend-status checking" id="status1">checking…</span>
+    </div>
+  </div>
+
+  <hr class="divider"/>
+
+  <button id="pauseBtn" class="pg">⏸ Pause Auto-Processing</button>
+  <div id="pauseMsg" style="font-size:.72rem;margin-top:.35rem;color:#fcd34d;min-height:1em;"></div>
+
+  <button id="captureBtn" class="capture" style="margin-top:.5rem;">🎯 Start Capture Mode</button>
+  <div id="captureMsg" style="font-size:.72rem;margin-top:.3rem;color:#7dd3fc;min-height:1.2em;text-align:center;"></div>
+
+  <div style="display:flex;gap:.5rem;margin-top:.5rem;">
+    <button id="resetEndpointBtn" class="reset" style="flex:1;">Reset Endpoint</button>
+    <button id="clearBtn" class="clear" style="flex:1;">Clear History</button>
+  </div>
+  <div id="clearMsg" style="font-size:.75rem;margin-top:.35rem;color:#fca5a5;min-height:1em;"></div>
+
+  <div id="endpointBox" style="font-size:.72rem;color:#94a3b8;margin-top:.5rem;min-height:1.2em;"></div>
+
+  <hr class="divider"/>
+  <div style="font-size:.8rem;font-weight:700;color:#7dd3fc;margin-bottom:.5rem;">💬 Telegram Chat Bridge</div>
+
+  <label>Bot Token <span style="color:#64748b;font-size:.7rem;">(from @BotFather)</span></label>
+  <input type="text" id="tgToken" placeholder="123456:ABCdef..." />
+
+  <label>Your Chat ID <span style="color:#64748b;font-size:.7rem;">(send /start to @userinfobot)</span></label>
+  <input type="text" id="tgChatId" placeholder="123456789" />
+
+  <button id="tgSaveBtn" style="background:#0ea5e9;">Save Telegram Settings</button>
+  <div id="tgMsg" style="font-size:.75rem;margin-top:.35rem;color:#6ee7b7;min-height:1em;"></div>
+  <div id="tgStatus" style="font-size:.72rem;color:#94a3b8;margin-top:.3rem;"></div>
+
+  <button id="tgTestBtn" style="margin-top:.4rem;background:#7c3aed;">🧪 Send Test Message</button>
+  <div id="tgTestMsg" style="font-size:.72rem;margin-top:.3rem;color:#c4b5fd;min-height:1em;"></div>
+
+  <p class="config-note">
+    Backend URLs are configured in <code>config.js</code> — edit that file and reload the extension to change them.
+  </p>
+
+  <script src="popup.js"></script>
+</body>
+</html>

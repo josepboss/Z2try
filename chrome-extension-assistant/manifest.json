@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Z2U Assistant",
+  "version": "1.0.0",
+  "description": "Watchdog for Z2U order page stability and modal detection",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "http://www.z2u.com/*",
+    "https://www.z2u.com/*",
+    "http://z2u.com/*",
+    "https://z2u.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://www.z2u.com/sellOrder*",
+        "*://z2u.com/sellOrder*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_popup": "sandbox.html",
+    "default_title": "Z2U Assistant"
+  },
+  "options_page": "sandbox.html",
+  "web_accessible_resources": [{
+    "resources": ["sandbox.html"],
+    "matches": ["<all_urls>"]
+  }]
+}
