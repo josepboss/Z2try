@@ -372,7 +372,7 @@ router.get("/admin", (_req, res) => {
     "      '<td><span class=\"' + tagClass + '\">' + deliveryMethod + '</span></td>' +\n" +
     "      '<td><span class=\"tag\">' + (separator||'default (:)') + '</span></td>' +\n" +
     "      '<td style=\"max-width:220px;white-space:pre-wrap;word-break:break-word;color:#94a3b8\">' + JSON.stringify(columnMap) + '</td>' +\n" +
-    "      '<td><button class=\"danger\" onclick=\"deleteMapping(\\'\" + encodeURIComponent(title) + \"'\\')\">Delete</button></td></tr>';\n" +
+    "      '<td><button class=\"danger\" onclick=\"deleteMapping(\\'' + encodeURIComponent(title) + '\\')\">Delete</button></td></tr>';\n" +
     "  }).join('');\n" +
     "}\n" +
     "\n" +
@@ -390,7 +390,7 @@ router.get("/admin", (_req, res) => {
     "    tbody.innerHTML = data.map(function(o){\n" +
     "      var kb = (o.bytes/1024).toFixed(1), dt = new Date(o.mtime).toLocaleString();\n" +
     "      return '<tr><td><span class=\"badge-tag\">' + o.orderId + '</span></td><td>' + kb + ' KB</td><td>' + dt + '</td>' +\n" +
-    "        '<td><button class=\"dl\" onclick=\"downloadOrder(\\'\" + o.orderId + \"'\\')\">Download</button></td></tr>';\n" +
+    "        '<td><button class=\"dl\" onclick=\"downloadOrder(\\'' + o.orderId + '\\')\">Download</button></td></tr>';\n" +
     "    }).join('');\n" +
     "  } catch(e) { console.error(e); }\n" +
     "}\n" +
@@ -449,6 +449,7 @@ router.get("/admin", (_req, res) => {
     "\n" +
     "async function deleteMapping(encodedTitle) {\n" +
     "  var title = decodeURIComponent(encodedTitle);\n" +
+    "  if (!confirm('Delete mapping for: ' + title + '?')) return;\n" +
     "  var res = await fetch('/api/admin/mappings/' + encodeURIComponent(title), {method:'DELETE'});\n" +
     "  if (res.ok) { showMsg('Deleted.', true); loadMappings(); }\n" +
     "  else { showMsg('Failed to delete.', false); }\n" +
@@ -559,7 +560,7 @@ router.get("/admin", (_req, res) => {
     "    return '<tr><td style=\"font-family:monospace;font-size:.8rem\">' + r.orderId + '</td>' +\n" +
     "      '<td style=\"font-size:.8rem\">' + title + '</td><td style=\"font-size:.8rem\">' + r.date + '</td>' +\n" +
     "      '<td style=\"color:#22c55e;font-size:.8rem\">' + amt + '</td>' +\n" +
-    "      '<td><button class=\"danger\" style=\"padding:.25rem .6rem;font-size:.75rem\" onclick=\"removeRecord(\\'\" + r.orderId + \"'\\')\">Remove</button></td></tr>';\n" +
+    "      '<td><button class=\"danger\" style=\"padding:.25rem .6rem;font-size:.75rem\" onclick=\"removeRecord(\\'' + r.orderId + '\\')\">Remove</button></td></tr>';\n" +
     "  }).join('');\n" +
     "  if (pageInfo) pageInfo.textContent = 'Page ' + (_recordsPage+1) + ' of ' + totalPages;\n" +
     "  if (btnPrev) btnPrev.disabled = _recordsPage === 0;\n" +
@@ -668,14 +669,11 @@ router.get("/admin/cached-orders/:orderId/download", (req, res) => {
   res.send(fs.readFileSync(filePath));
 });
 
-// ── Analytics ──────────────────────────────────────────────────────────────────
-
 router.post("/admin/analytics/record", (req, res) => {
   const { orderId, title, quantity, amount } = req.body as {
     orderId: string; title?: string; quantity?: number; amount?: number | null;
   };
   if (!orderId) { res.status(400).json({ error: "orderId required" }); return; }
-
   const records = loadAnalytics();
   const exists = records.some((r) => r.orderId === orderId);
   if (!exists) {
@@ -728,7 +726,6 @@ router.delete("/admin/analytics/:orderId", (req, res) => {
   res.json({ ok: true, removed: before - updated.length });
 });
 
-// ── Pending chat-reply queue ──────────────────────────────────────────────────
 interface PendingReply {
   username: string;
   message:  string;
@@ -755,7 +752,6 @@ router.get("/admin/pending-chat-replies", (_req, res) => {
   res.json(replies);
 });
 
-// ── VPS proxy upload ───────────────────────────────────────────────────────────
 router.post("/admin/proxy-upload", async (req, res) => {
   const { fileBytes, orderId, cookies, note, pageUrl } = req.body as {
     fileBytes: number[];
@@ -764,19 +760,16 @@ router.post("/admin/proxy-upload", async (req, res) => {
     note?: string;
     pageUrl?: string;
   };
-
   if (!fileBytes?.length || !orderId || !cookies?.length) {
     res.status(400).json({ ok: false, error: "Missing fileBytes, orderId, or cookies" });
     return;
   }
-
-  const buf          = Buffer.from(fileBytes);
-  const noteValue    = note || "Delivered";
+  const buf         = Buffer.from(fileBytes);
+  const noteValue   = note || "Delivered";
   const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
   const xsrfCookie  = cookies.find((c) => /^XSRF-TOKEN$/i.test(c.name));
   const xsrfToken   = xsrfCookie ? decodeURIComponent(xsrfCookie.value) : "";
   const referer     = pageUrl || `https://www.z2u.com/sellOrder?order_id=${orderId}`;
-
   const Z2U_ENDPOINTS = [
     "https://www.z2u.com/sellOrder/uploadSellForm",
     "https://www.z2u.com/sellOrder/uploadDelivery",
@@ -784,9 +777,7 @@ router.post("/admin/proxy-upload", async (req, res) => {
     "https://www.z2u.com/api/sellOrder/uploadSellForm",
   ];
   const FILE_FIELDS = ["upfile", "file", "upload", "excel", "formFile"];
-
   const results: { url: string; field: string; status: number; body: string }[] = [];
-
   for (const url of Z2U_ENDPOINTS) {
     for (const fieldName of FILE_FIELDS) {
       try {
@@ -796,7 +787,6 @@ router.post("/admin/proxy-upload", async (req, res) => {
         formData.append(fieldName, new Blob([buf], {
           type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         }), `Z2U_delivery_${orderId}.xlsx`);
-
         const headers: Record<string, string> = {
           "Cookie": cookieHeader,
           "Referer": referer,
@@ -808,17 +798,10 @@ router.post("/admin/proxy-upload", async (req, res) => {
           headers["X-XSRF-TOKEN"] = xsrfToken;
           headers["X-CSRF-TOKEN"]  = xsrfToken;
         }
-
-        const resp = await fetch(url, {
-          method: "POST",
-          headers,
-          body: formData,
-        });
-
+        const resp = await fetch(url, { method: "POST", headers, body: formData });
         const text = await resp.text();
         results.push({ url, field: fieldName, status: resp.status, body: text.slice(0, 400) });
         logger.info({ url, field: fieldName, status: resp.status }, "[proxy-upload] response");
-
         let json: any = null;
         try { json = JSON.parse(text); } catch { /* not JSON */ }
         if (json) {
@@ -841,7 +824,6 @@ router.post("/admin/proxy-upload", async (req, res) => {
       }
     }
   }
-
   res.json({ ok: false, error: "All endpoints failed", results });
 });
 
