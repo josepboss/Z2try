@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 const MAPPINGS_FILE    = path.resolve(__dirname, "../../mappings.json");
 const CACHE_DIR        = path.resolve(__dirname, "../../order-cache");
 const ANALYTICS_FILE   = path.resolve(__dirname, "../../analytics.json");
-const HEAL_CONFIG_FILE  = path.resolve(__dirname, "../../heal-config.json");
+const HEAL_CONFIG_FILE = path.resolve(__dirname, "../../heal-config.json");
 
 interface AnalyticsRecord {
   orderId:    string;
@@ -147,7 +147,7 @@ router.get("/admin", (_req, res) => {
     "</style>\n" +
     "</head>\n" +
     "<body>\n" +
-    "<h1>Z2U \u2194 Lfollowers Admin</h1>\n" +
+    "<h1>Z2U &harr; Lfollowers Admin</h1>\n" +
     "<p class=\"sub\">Map Z2U Offer Titles to Lfollowers Product IDs for automated order processing.</p>\n" +
     "<div id=\"msg\"></div>\n" +
     "\n" +
@@ -159,22 +159,22 @@ router.get("/admin", (_req, res) => {
     "    <tbody id=\"analyticsBody\"><tr><td colspan=\"4\" style=\"color:#64748b\">Loading...</td></tr></tbody>\n" +
     "  </table>\n" +
     "  <div style=\"display:flex;align-items:center;justify-content:flex-end;gap:.75rem;margin-top:.75rem\">\n" +
-    "    <button id=\"analyticsPrev\" class=\"pg\" onclick=\"_analyticsPage--;renderAnalyticsPage()\" disabled>&#8592; Prev</button>\n" +
+    "    <button id=\"analyticsPrev\" class=\"pg\" onclick=\"_analyticsPage--;renderAnalyticsPage()\" disabled>&larr; Prev</button>\n" +
     "    <span id=\"analyticsPageInfo\" style=\"font-size:.8rem;color:#94a3b8\"></span>\n" +
-    "    <button id=\"analyticsNext\" class=\"pg\" onclick=\"_analyticsPage++;renderAnalyticsPage()\" disabled>Next &#8594;</button>\n" +
+    "    <button id=\"analyticsNext\" class=\"pg\" onclick=\"_analyticsPage++;renderAnalyticsPage()\" disabled>Next &rarr;</button>\n" +
     "  </div>\n" +
     "</div>\n" +
     "\n" +
     "<div class=\"card\">\n" +
-    "  <h2>Order Records <span style=\"font-size:.75rem;color:#64748b;font-weight:400;font-size:.8rem\">(individual)</span></h2>\n" +
+    "  <h2>Order Records <span style=\"font-size:.75rem;color:#64748b;font-weight:400\">(individual)</span></h2>\n" +
     "  <table>\n" +
     "    <thead><tr><th>Order ID</th><th>Title</th><th>Date</th><th>Amount</th><th></th></tr></thead>\n" +
     "    <tbody id=\"recordsBody\"><tr><td colspan=\"5\" style=\"color:#64748b\">Loading...</td></tr></tbody>\n" +
     "  </table>\n" +
     "  <div style=\"display:flex;align-items:center;justify-content:flex-end;gap:.75rem;margin-top:.75rem\">\n" +
-    "    <button id=\"recordsPrev\" class=\"pg\" onclick=\"_recordsPage--;renderRecordsPage()\" disabled>&#8592; Prev</button>\n" +
+    "    <button id=\"recordsPrev\" class=\"pg\" onclick=\"_recordsPage--;renderRecordsPage()\" disabled>&larr; Prev</button>\n" +
     "    <span id=\"recordsPageInfo\" style=\"font-size:.8rem;color:#94a3b8\"></span>\n" +
-    "    <button id=\"recordsNext\" class=\"pg\" onclick=\"_recordsPage++;renderRecordsPage()\" disabled>Next &#8594;</button>\n" +
+    "    <button id=\"recordsNext\" class=\"pg\" onclick=\"_recordsPage++;renderRecordsPage()\" disabled>Next &rarr;</button>\n" +
     "  </div>\n" +
     "</div>\n" +
     "\n" +
@@ -372,7 +372,7 @@ router.get("/admin", (_req, res) => {
     "      '<td><span class=\"' + tagClass + '\">' + deliveryMethod + '</span></td>' +\n" +
     "      '<td><span class=\"tag\">' + (separator||'default (:)') + '</span></td>' +\n" +
     "      '<td style=\"max-width:220px;white-space:pre-wrap;word-break:break-word;color:#94a3b8\">' + JSON.stringify(columnMap) + '</td>' +\n" +
-    "      '<td><button class=\"danger\" onclick=\"deleteMapping(\\'' + encodeURIComponent(title) + '\\')\">Delete</button></td></tr>';\n" +
+    "      '<td><button class=\"danger\" onclick=\"deleteMapping(\\'\" + encodeURIComponent(title) + \"'\\')\">Delete</button></td></tr>';\n" +
     "  }).join('');\n" +
     "}\n" +
     "\n" +
@@ -390,7 +390,7 @@ router.get("/admin", (_req, res) => {
     "    tbody.innerHTML = data.map(function(o){\n" +
     "      var kb = (o.bytes/1024).toFixed(1), dt = new Date(o.mtime).toLocaleString();\n" +
     "      return '<tr><td><span class=\"badge-tag\">' + o.orderId + '</span></td><td>' + kb + ' KB</td><td>' + dt + '</td>' +\n" +
-    "        '<td><button class=\"dl\" onclick=\"downloadOrder(\\'' + o.orderId + '\\')\">Download</button></td></tr>';\n" +
+    "        '<td><button class=\"dl\" onclick=\"downloadOrder(\\'\" + o.orderId + \"'\\')\">Download</button></td></tr>';\n" +
     "    }).join('');\n" +
     "  } catch(e) { console.error(e); }\n" +
     "}\n" +
@@ -513,12 +513,20 @@ router.get("/admin", (_req, res) => {
     "    var todayDate = new Date().toISOString().slice(0,10);\n" +
     "    var todayData = data.find(function(d){ return d.date === todayDate; });\n" +
     "    if (todayData) {\n" +
-    "      todayEl.innerHTML = '<div><div style=\"font-size:.7rem;color:#94a3b8\">TODAY\'S REVENUE</div>' +\n" +
-    "        '<div style=\"font-size:2rem;font-weight:700;color:#22c55e\">$' + todayData.revenue.toFixed(2) + '</div></div>' +\n" +
-    "        '<div><div style=\"font-size:.7rem;color:#94a3b8\">ORDERS TODAY</div>' +\n" +
-    "        '<div style=\"font-size:2rem;font-weight:700;color:#6366f1\">' + todayData.orders + '</div></div>' +\n" +
-    "        '<div><div style=\"font-size:.7rem;color:#94a3b8\">AVG / ORDER</div>' +\n" +
-    "        '<div style=\"font-size:2rem;font-weight:700;color:#f59e0b\">$' + (todayData.revenue/todayData.orders).toFixed(2) + '</div></div>';\n" +
+    "      todayEl.innerHTML = [\n" +
+    "        '<div>',\n" +
+    "          '<div style=\"font-size:.7rem;color:#94a3b8\">TODAY REVENUE</div>',\n" +
+    "          '<div style=\"font-size:2rem;font-weight:700;color:#22c55e\">$' + todayData.revenue.toFixed(2) + '</div>',\n" +
+    "        '</div>',\n" +
+    "        '<div>',\n" +
+    "          '<div style=\"font-size:.7rem;color:#94a3b8\">ORDERS TODAY</div>',\n" +
+    "          '<div style=\"font-size:2rem;font-weight:700;color:#6366f1\">' + todayData.orders + '</div>',\n" +
+    "        '</div>',\n" +
+    "        '<div>',\n" +
+    "          '<div style=\"font-size:.7rem;color:#94a3b8\">AVG PER ORDER</div>',\n" +
+    "          '<div style=\"font-size:2rem;font-weight:700;color:#f59e0b\">$' + (todayData.revenue/todayData.orders).toFixed(2) + '</div>',\n" +
+    "        '</div>',\n" +
+    "      ].join('');\n" +
     "    } else {\n" +
     "      todayEl.innerHTML = '<span style=\"color:#64748b;font-size:.875rem\">No orders today yet.</span>';\n" +
     "    }\n" +
@@ -551,7 +559,7 @@ router.get("/admin", (_req, res) => {
     "    return '<tr><td style=\"font-family:monospace;font-size:.8rem\">' + r.orderId + '</td>' +\n" +
     "      '<td style=\"font-size:.8rem\">' + title + '</td><td style=\"font-size:.8rem\">' + r.date + '</td>' +\n" +
     "      '<td style=\"color:#22c55e;font-size:.8rem\">' + amt + '</td>' +\n" +
-    "      '<td><button class=\"danger\" style=\"padding:.25rem .6rem;font-size:.75rem\" onclick=\"removeRecord(\\'' + r.orderId + '\\')\">Remove</button></td></tr>';\n" +
+    "      '<td><button class=\"danger\" style=\"padding:.25rem .6rem;font-size:.75rem\" onclick=\"removeRecord(\\'\" + r.orderId + \"'\\')\">Remove</button></td></tr>';\n" +
     "  }).join('');\n" +
     "  if (pageInfo) pageInfo.textContent = 'Page ' + (_recordsPage+1) + ' of ' + totalPages;\n" +
     "  if (btnPrev) btnPrev.disabled = _recordsPage === 0;\n" +
@@ -762,8 +770,8 @@ router.post("/admin/proxy-upload", async (req, res) => {
     return;
   }
 
-  const buf         = Buffer.from(fileBytes);
-  const noteValue   = note || "Delivered";
+  const buf          = Buffer.from(fileBytes);
+  const noteValue    = note || "Delivered";
   const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
   const xsrfCookie  = cookies.find((c) => /^XSRF-TOKEN$/i.test(c.name));
   const xsrfToken   = xsrfCookie ? decodeURIComponent(xsrfCookie.value) : "";
