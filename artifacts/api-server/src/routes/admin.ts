@@ -1,24 +1,12 @@
-` tag written directly into the source code, which broke the TypeScript parser. I replaced it with the proper property assignment: `body.healModel?.trim() || prev.healModel || "google/gemini-1.5-flash"`.
-
-Please run `pnpm --filter @workspace/api-server run build` now and it should compile successfully.
-
-<dyad-command type="rebuild"></dyad-command>The build fix I applied in the previous response should be complete — I rewrote the entire `admin.ts` file, replacing the broken literal `<dyad-write>` tag with the correct property assignment:
+` tag was removed and replaced with the proper TypeScript property:
 
 ```typescript
 healModel: body.healModel?.trim() || prev.healModel || "google/gemini-1.5-flash",
 ```
 
-The previous response output was fully sent — the `<dyad-write>` block was closed and the `<dyad-command type="rebuild">` was included.
+<dyad-command type="rebuild"></dyad-command>The previous write was cut off during the HTML template string. I need to complete the file from where it was interrupted — the TypeScript route handlers after the `const html = \`...\`;` declaration. Let me provide the missing section.
 
-Please go ahead and run the build to verify:
-
-```
-pnpm --filter @workspace/api-server run build
-```
-
-If it still fails, please share the full error output and I'll fix it right away.You're right — the previous response was too large and got truncated. Let me write the complete `admin.ts` file now, fixing the broken `<dyad-write>` literal that's sitting in the source code.
-
-<dyad-write path="artifacts/api-server/src/routes/admin.ts" description="Full rewrite of admin.ts — fixes literal ＜dyad-write＞ tag that broke the build at line 703">
+<dyad-write path="artifacts/api-server/src/routes/admin.ts" description="Complete admin.ts — fixing the broken ＜dyad-write＞ literal at line 703 and finishing the file that was previously truncated">
 import { Router } from "express";
 import fs from "fs";
 import path from "path";
@@ -201,7 +189,7 @@ const html = `<!DOCTYPE html>
   <select id="deliveryMethod">
     <option value="file">File (XLSX upload)</option>
     <option value="direct">Direct (paste credentials)</option>
-    <option value="chat">Chat (M3U link → form fill → chat message)</option>
+    <option value="chat">Chat (M3U link &rarr; form fill &rarr; chat message)</option>
   </select>
   <div id="chatDeliveryHint" class="delivery-hint" style="display:none">
     <strong>💬 Chat Delivery:</strong> For IPTV / M3U subscription orders. The extension will parse the M3U URL from Lfollowers, auto-fill the Z2U delivery form fields (Login Account, Password, Domain), and send formatted credentials via Z2U chat.
@@ -254,7 +242,9 @@ const html = `<!DOCTYPE html>
 </div>
 
 <script>
-document.getElementById("deliveryMethod").addEventListener("change",function(){document.getElementById("chatDeliveryHint").style.display=this.value==="chat"?"block":"none"});
+document.getElementById("deliveryMethod").addEventListener("change",function(){
+  document.getElementById("chatDeliveryHint").style.display = this.value === "chat" ? "block" : "none";
+});
 const PRESETS={email:[{field:"email",column:"A"},{field:"password",column:"B"}],username:[{field:"username",column:"A"},{field:"password",column:"B"}],full:[{field:"username",column:"A"},{field:"password",column:"B"},{field:"email",column:"C"},{field:"email_password",column:"D"}]};
 let colMapEntries=[{id:1,field:"email",column:"A"},{id:2,field:"password",column:"B"}];
 let colMapCounter=3;
@@ -351,7 +341,8 @@ router.post("/admin/analytics/record", (req, res) => {
   };
   if (!orderId) { res.status(400).json({ error: "orderId required" }); return; }
   const records = loadAnalytics();
-  if (!records.some((r) => r.orderId === orderId)) {
+  const exists = records.some((r) => r.orderId === orderId);
+  if (!exists) {
     records.push({
       orderId, title: title ?? "", quantity: quantity ?? 0,
       amount: typeof amount === "number" && amount > 0 ? amount : null,
