@@ -566,11 +566,6 @@
   //  CHAT DELIVERY — M3U Credential Extraction & Form Auto-Fill
   // ══════════════════════════════════════════════════════════════════════════
 
-  /**
-   * Parse an M3U URL and extract username, password, and base domain.
-   * @param {string} m3uUrl
-   * @returns {{ username: string, password: string, baseDomain: string, rawUrl: string } | null}
-   */
   function parseM3uUrl(m3uUrl) {
     if (!m3uUrl || typeof m3uUrl !== 'string') return null;
     const trimmed = m3uUrl.trim();
@@ -592,31 +587,15 @@
     }
   }
 
-  /**
-   * Get alternative domains for a base domain from the server config.
-   * @param {string} baseDomain
-   * @returns {string[]}
-   */
   function getAlternativeDomains(baseDomain) {
     const config = {
-      "http://skyline-mm.com": [
-        "http://example1.com",
-        "http://example2.com",
-      ],
-      "http://line.trxdnscloud.ru": [
-        "http://vpn.trxdnscloud.ru",
-        "http://tv.trexiptv.com",
-      ],
+      "http://skyline-mm.com": ["http://example1.com", "http://example2.com"],
+      "http://line.trxdnscloud.ru": ["http://vpn.trxdnscloud.ru", "http://tv.trexiptv.com"],
     };
     const normalized = (baseDomain || "").trim().toLowerCase();
     return config[normalized] || config[baseDomain?.trim()] || [];
   }
 
-  /**
-   * Format the chat message with credentials and optional alternative domains.
-   * @param {{ username: string, password: string, baseDomain: string }} parsed
-   * @returns {string}
-   */
   function formatChatMessage(parsed) {
     if (!parsed || !parsed.username || !parsed.password || !parsed.baseDomain) {
       log("CHAT-DELIVERY", "formatChatMessage: invalid parsed input");
@@ -624,95 +603,57 @@
     }
     const { username, password, baseDomain } = parsed;
     const altDomains = getAlternativeDomains(baseDomain);
-
     const lines = [
-      'Login Account',
-      `: ${username}`,
-      '',
-      'Login Password',
-      `: ${password}`,
-      '',
-      'Domain',
-      `: ${baseDomain}`,
+      'Login Account', `: ${username}`, '',
+      'Login Password', `: ${password}`, '',
+      'Domain', `: ${baseDomain}`,
     ];
-
     if (altDomains.length > 0) {
-      for (const alt of altDomains) {
-        lines.push(`alternative domain : ${alt}`);
-      }
+      for (const alt of altDomains) lines.push(`alternative domain : ${alt}`);
     }
-
     const message = lines.join('\n');
     log("CHAT-DELIVERY", `formatChatMessage: ✅ ${altDomains.length} alt domains — ${lines.length} lines`);
     return message;
   }
 
-  /**
-   * Safely inject a value into a DOM input and trigger React/Vue state updates.
-   * @param {HTMLInputElement} input
-   * @param {string} value
-   * @returns {boolean}
-   */
   function safeInjectValue(input, value) {
     if (!input) return false;
-
     const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-    if (nativeSetter) {
-      nativeSetter.call(input, value);
-    } else {
-      input.value = value;
-    }
-
-    const reactPropsKey = Object.keys(input).find(
-      (k) => k.startsWith("__reactProps") || k.startsWith("__reactInternals")
-    );
+    if (nativeSetter) nativeSetter.call(input, value); else input.value = value;
+    const reactPropsKey = Object.keys(input).find((k) => k.startsWith("__reactProps") || k.startsWith("__reactInternals"));
     if (reactPropsKey) {
       const props = input[reactPropsKey];
       const onChangeFn = props?.onChange;
       if (typeof onChangeFn === "function") {
-        const fakeEvent = {
-          target: input, currentTarget: input,
-          type: "input", bubbles: true,
+        onChangeFn({
+          target: input, currentTarget: input, type: "input", bubbles: true,
           nativeEvent: { target: input, data: value },
           preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
-        };
-        onChangeFn(fakeEvent);
+        });
         log("CHAT-DELIVERY", `[inject] ✅ React onChange via ${reactPropsKey}`);
       }
     }
-
     const fiberKey = Object.keys(input).find((k) => k.startsWith("__reactFiber"));
     if (fiberKey) {
       const onChange = input[fiberKey]?.memoizedProps?.onChange;
       if (typeof onChange === "function") {
-        const fakeEvent = {
+        onChange({
           target: input, currentTarget: input, type: "input", bubbles: true,
           nativeEvent: { target: input }, preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
-        };
-        onChange(fakeEvent);
+        });
         log("CHAT-DELIVERY", `[inject] ✅ React onChange via __reactFiber`);
       }
     }
-
     input.dispatchEvent(new Event("input",  { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
-
     const landed = input.value;
     log("CHAT-DELIVERY", `[inject] field="${input.name}" → "${landed.slice(0, 40)}" (${landed.length} chars)`);
     return landed.length > 0;
   }
 
-  /**
-   * Fill the three Z2U delivery form fields with parsed M3U credentials.
-   * @param {{ username: string, password: string, baseDomain: string }} parsed
-   * @returns {boolean}
-   */
   function fillDeliveryForm(parsed) {
     if (!parsed) return false;
-
     const results = [];
-
-    // Field 1: Login Account (Username) — delivery[98]
     const usernameField = document.querySelector('input[name="delivery[98]"].form-control.required-fields');
     if (usernameField) {
       results.push(safeInjectValue(usernameField, parsed.username));
@@ -721,8 +662,6 @@
       warn("CHAT-DELIVERY", `❌ delivery[98] field not found on page`);
       results.push(false);
     }
-
-    // Field 2: Login Password — delivery[99]
     const passwordField = document.querySelector('input[name="delivery[99]"].form-control.required-fields');
     if (passwordField) {
       results.push(safeInjectValue(passwordField, parsed.password));
@@ -731,8 +670,6 @@
       warn("CHAT-DELIVERY", `❌ delivery[99] field not found on page`);
       results.push(false);
     }
-
-    // Field 3: Additional Information (Domain) — delivery[113]
     const domainField = document.querySelector('input[name="delivery[113]"].form-control');
     if (domainField) {
       results.push(safeInjectValue(domainField, parsed.baseDomain));
@@ -741,16 +678,11 @@
       warn("CHAT-DELIVERY", `❌ delivery[113] field not found on page`);
       results.push(false);
     }
-
     const allOk = results.every(Boolean);
     log("CHAT-DELIVERY", `fillDeliveryForm: ${allOk ? '✅ ALL fields filled' : `⚠️  ${results.filter(Boolean).length}/3 filled`}`);
     return allOk;
   }
 
-  /**
-   * Find and click the chat trigger link (a.talkSeller) in the order row.
-   * @returns {string | null}
-   */
   function openChatWindow() {
     const chatLink = document.querySelector('div.SellerChatAndOtherProduct a.talkSeller');
     if (!chatLink) {
@@ -767,16 +699,8 @@
     return href;
   }
 
-  /**
-   * Send a message via the local Playwright bridge (bridge.py /chat-reply).
-   * Falls back to direct DOM injection if bridge is unavailable.
-   * @param {string} message
-   * @param {string} orderId
-   * @returns {Promise<boolean>}
-   */
   async function sendChatMessage(message, orderId) {
     if (!message) return false;
-
     try {
       const resp = await fetch("http://localhost:5000/chat-reply", {
         method: "POST",
@@ -796,18 +720,11 @@
     } catch (e) {
       warn("CHAT-DELIVERY", `Bridge unreachable: ${e.message} — falling back to direct injection`);
     }
-
     return sendChatMessageDirect(message);
   }
 
-  /**
-   * Fallback: inject message directly into the Z2U chat DOM.
-   * @param {string} message
-   * @returns {Promise<boolean>}
-   */
   async function sendChatMessageDirect(message) {
     const SIDEBAR_SEL = '[class*="sideBar"], [class*="sidebar"], [class*="chatList"], aside, nav';
-
     function isSearchField(el) {
       if (el.type === "search") return true;
       const ph = (el.placeholder || el.getAttribute("placeholder") || "").toLowerCase();
@@ -820,35 +737,26 @@
       }
       return false;
     }
-
     const candidates = Array.from(document.querySelectorAll('textarea, div[contenteditable="true"], input[type="text"]'))
       .filter(el => el.offsetParent && !el.closest(SIDEBAR_SEL) && !isSearchField(el));
-
     if (!candidates.length) {
       warn("CHAT-DELIVERY", `sendChatMessageDirect: no chat input found on page`);
       return false;
     }
-
     const byPlaceholder = candidates.find(el => {
       const ph = (el.placeholder || el.getAttribute("placeholder") || "").toLowerCase();
       return /message|type|write|send|reply|chat/i.test(ph);
     });
     const chatInput = byPlaceholder || candidates[candidates.length - 1];
-
     log("CHAT-DELIVERY", `sendChatMessageDirect: targeting <${chatInput.tagName} class="${chatInput.className.slice(0,60)}">`);
-
     chatInput.focus();
     chatInput.click();
     await sleep(100);
-
     const execOk = document.execCommand("insertText", false, message);
     log("CHAT-DELIVERY", `sendChatMessageDirect: execCommand insertText → ${execOk}`);
-
     chatInput.dispatchEvent(new Event("input",  { bubbles: true }));
     chatInput.dispatchEvent(new Event("change", { bubbles: true }));
-
     await sleep(300);
-
     const sendBtn = Array.from(document.querySelectorAll("button, [role='button']"))
       .find(b => {
         if (!b.offsetParent || b.closest(SIDEBAR_SEL)) return false;
@@ -856,13 +764,11 @@
         const cls = (b.className || "").toLowerCase();
         return /send|submit|发送|确认/.test(txt + " " + cls);
       });
-
     if (sendBtn) {
       sendBtn.click();
       log("CHAT-DELIVERY", `✅ Clicked send button`);
       return true;
     }
-
     const evtOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
     chatInput.dispatchEvent(new KeyboardEvent("keydown",  evtOpts));
     chatInput.dispatchEvent(new KeyboardEvent("keypress", evtOpts));
@@ -871,55 +777,34 @@
     return true;
   }
 
-  /**
-   * Main chat delivery pipeline for a single order.
-   * Orchestrates: parse M3U → fill form → open chat → send message.
-   * @param {string} orderId
-   * @param {string} title
-   * @param {number} quantity
-   * @param {string} m3uUrl - The M3U link from Lfollowers
-   * @returns {Promise<boolean>}
-   */
   async function runChatDelivery(orderId, title, quantity, m3uUrl) {
     log("CHAT-DELIVERY", `🚀 Starting chat delivery | orderId=${orderId} | m3uUrl="${(m3uUrl || "").slice(0, 80)}"`);
-
     if (!m3uUrl) {
       err("CHAT-DELIVERY", "No M3U URL provided — cannot extract credentials");
       return false;
     }
-
     const parsed = parseM3uUrl(m3uUrl);
     if (!parsed) {
-      err("CHAT-DELIVERY", `Failed to parse M3U URL: "${m3uUrl.slice(0, 80)}"`);
+      err("CHAT-DELIVERY", `Failed to parse M3U URL: "${m3uUrl.slice(0, 80)}`);
       return false;
     }
-
     const formFilled = fillDeliveryForm(parsed);
-    if (!formFilled) {
-      warn("CHAT-DELIVERY", `Form fill was incomplete — continuing anyway`);
-    }
+    if (!formFilled) warn("CHAT-DELIVERY", `Form fill was incomplete — continuing anyway`);
     await sleep(800);
-
     const message = formatChatMessage(parsed);
     if (!message) {
       err("CHAT-DELIVERY", "Failed to format chat message");
       return false;
     }
     log("CHAT-DELIVERY", `Message preview:\n${message}`);
-
     const chatHref = openChatWindow();
-    if (!chatHref) {
-      warn("CHAT-DELIVERY", `Could not open chat window — will try direct send`);
-    }
-
+    if (!chatHref) warn("CHAT-DELIVERY", `Could not open chat window — will try direct send`);
     await sleep(3000);
-
     const sent = await sendChatMessage(message, orderId);
     if (!sent) {
       warn("CHAT-DELIVERY", `Message send failed — chat may not have opened correctly`);
       return false;
     }
-
     log("CHAT-DELIVERY", `✅ Chat message sent for order ${orderId}`);
     return true;
   }
@@ -931,11 +816,7 @@
   function normalizeMappingEntry(raw) {
     if (!raw) return null;
     if (typeof raw === "string") {
-      return {
-        serviceId: raw,
-        deliveryMethod: "file",
-        columnMap: { email: "A", password: "B" },
-      };
+      return { serviceId: raw, deliveryMethod: "file", columnMap: { email: "A", password: "B" } };
     }
     return {
       serviceId: raw.serviceId || "",
@@ -982,26 +863,15 @@
 
   async function runListPage() {
     log("LIST", "📋 Scan started.");
-
     const mappings = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: "GET_MAPPINGS" }, (r) =>
-        resolve(r?.mappings || {})
-      );
+      chrome.runtime.sendMessage({ type: "GET_MAPPINGS" }, (r) => resolve(r?.mappings || {}));
     });
-
     const mappingKeys = Object.keys(mappings);
     log("LIST", `Mappings loaded: ${mappingKeys.length} entries → ${JSON.stringify(mappingKeys)}`);
-
-    if (!mappingKeys.length) {
-      warn("LIST", "No mappings configured — nothing to do.");
-      return;
-    }
+    if (!mappingKeys.length) { warn("LIST", "No mappings configured — nothing to do."); return; }
 
     function normaliseTitle(s) {
-      return (s || "")
-        .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
+      return (s || "").replace(/[\u200B-\u200D\uFEFF\u00AD]/g, "").replace(/\s+/g, " ").trim();
     }
     function findMapping(title) {
       if (mappings[title]) return title;
@@ -1011,24 +881,19 @@
 
     const panels = document.querySelectorAll(".orderPanel");
     log("LIST", `Found ${panels.length} .orderPanel(s).`);
-
-    if (!panels.length) {
-      warn("LIST", "No .orderPanel divs found.");
-      log("LIST", "Page body preview:", document.body.innerHTML.slice(0, 500));
-    }
+    if (!panels.length) { warn("LIST", "No .orderPanel divs found."); log("LIST", "Page body preview:", document.body.innerHTML.slice(0, 500)); }
 
     for (const panel of panels) {
       const statusBadge = panel.querySelector(".smLabel.dangerLabel, .smLabel.warningLabel, .smLabel");
       const statusText  = statusBadge?.textContent?.trim().toUpperCase() || "(no status)";
       log("LIST", `Panel status: "${statusText}"`);
-
       const isActionable = statusText.includes("NEW ORDER") || statusText.includes("PREPARING") || statusText.includes("DELIVERING");
       if (!isActionable) continue;
 
-      const copyBtn              = panel.querySelector("[data-clipboard-text]");
+      const copyBtn = panel.querySelector("[data-clipboard-text]");
       const orderIdFromClipboard = copyBtn?.getAttribute("data-clipboard-text")?.trim();
-      const orderIdFromLink      = panel.querySelector(".o-number a")?.textContent?.trim();
-      const orderId              = orderIdFromClipboard || orderIdFromLink;
+      const orderIdFromLink = panel.querySelector(".o-number a")?.textContent?.trim();
+      const orderId = orderIdFromClipboard || orderIdFromLink;
 
       const titleEl = (
         panel.querySelector(".o-l-col.productInfo a") ||
@@ -1043,36 +908,17 @@
 
       const detailLink = panel.querySelector('.o-l-col.productStatus a[href*="sellOrder"]');
       const detailHref = detailLink?.getAttribute("href") || "";
-
       const resolvedListTitle = findMapping(title);
       log("LIST", `🔍 NEW ORDER → orderId="${orderId}" | title="${title}" | resolvedTitle="${resolvedListTitle}" | href="${detailHref}"`);
 
-      if (!orderId) {
-        warn("LIST", "Could not extract orderId — skipping.");
-        continue;
-      }
+      if (!orderId) { warn("LIST", "Could not extract orderId — skipping."); continue; }
 
       if (!resolvedListTitle) {
-        if (!statusText.includes("NEW ORDER")) {
-          log("LIST", `Unmapped order ${orderId} in state "${statusText}" — ignoring.`);
-          continue;
-        }
-
-        if (sessionDone.has(orderId)) {
-          log("LIST", `Unmapped order ${orderId} already prepared this session.`);
-          continue;
-        }
+        if (!statusText.includes("NEW ORDER")) { log("LIST", `Unmapped order ${orderId} in state "${statusText}" — ignoring.`); continue; }
+        if (sessionDone.has(orderId)) { log("LIST", `Unmapped order ${orderId} already prepared this session.`); continue; }
         const alreadyPrepared = await bgIsPreparedOnly(orderId);
-        if (alreadyPrepared) {
-          log("LIST", `Unmapped order ${orderId} already had Prepare clicked — skipping.`);
-          continue;
-        }
-
-        if (!detailHref) {
-          warn("LIST", `No detail link for unmapped order ${orderId}.`);
-          continue;
-        }
-
+        if (alreadyPrepared) { log("LIST", `Unmapped order ${orderId} already had Prepare clicked — skipping.`); continue; }
+        if (!detailHref) { warn("LIST", `No detail link for unmapped order ${orderId}.`); continue; }
         log("LIST", `⚡ Unmapped NEW ORDER "${title}" (${orderId}) → navigating to click Prepare only`);
         sessionDone.add(orderId);
         await chrome.storage.local.set({ prepareOnly: true, pendingOrderId: orderId, pendingUnmappedTitle: title });
@@ -1080,27 +926,15 @@
         return;
       }
 
-      if (sessionDone.has(orderId)) {
-        log("LIST", `Order ${orderId} already in progress this session.`);
-        continue;
-      }
+      if (sessionDone.has(orderId)) { log("LIST", `Order ${orderId} already in progress this session.`); continue; }
       const alreadyDone = await bgIsProcessed(orderId);
-      if (alreadyDone) {
-        log("LIST", `Order ${orderId} already processed (persistent storage).`);
-        continue;
-      }
-
-      if (!detailHref) {
-        warn("LIST", `No Order Detail link for ${orderId}.`);
-        continue;
-      }
-
+      if (alreadyDone) { log("LIST", `Order ${orderId} already processed (persistent storage).`); continue; }
+      if (!detailHref) { warn("LIST", `No Order Detail link for ${orderId}.`); continue; }
       await chrome.storage.local.set({ pendingOrderId: orderId, pendingTitle: resolvedListTitle });
       log("LIST", `🔗 Navigating to detail page: ${detailHref}`);
       window.location.href = detailHref;
       return;
     }
-
     log("LIST", "✅ Scan complete — no unprocessed NEW ORDER panels.");
   }
 
@@ -1111,47 +945,20 @@
   async function runDetailPage() {
     const params  = new URLSearchParams(window.location.search);
     const orderId = params.get("order_id") || params.get("orderId");
-
     log("DETAIL", `📄 Page loaded | orderId="${orderId}"`);
-
-    if (!orderId) {
-      warn("DETAIL", "No order_id in URL — stopping.");
-      return;
-    }
-
+    if (!orderId) { warn("DETAIL", "No order_id in URL — stopping."); return; }
     log("DETAIL", "Waiting 1s for page to fully render…");
     await sleep(1000);
 
-    // ── Prepare-only mode (unmapped orders) ──────────────────────────────────
-    const { prepareOnly, pendingOrderId: prepareOrderId, pendingUnmappedTitle: unmappedTitle } = await new Promise((r) =>
-      chrome.storage.local.get(["prepareOnly", "pendingOrderId", "pendingUnmappedTitle"], r)
+    // ── [0] Resume pending Confirm Delivery after page reload ─────────────────
+    const { pendingConfirmOrderId, pendingConfirmQty } = await new Promise((r) =>
+      chrome.storage.local.get(["pendingConfirmOrderId", "pendingConfirmQty"], r)
     );
-
-    if (prepareOnly && prepareOrderId === orderId) {
-      log("DETAIL", `[PREPARE-ONLY] Unmapped order ${orderId} — clicking Prepare then returning to list.`);
-      await chrome.storage.local.remove(["prepareOnly", "pendingOrderId", "pendingUnmappedTitle"]);
-
-      const allBtns = Array.from(document.querySelectorAll("button, a"));
-      const prepBtn = allBtns.find((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
-
-      if (prepBtn) {
-        log("DETAIL", `[PREPARE-ONLY] Clicking "Preparing" button…`);
-        await chrome.storage.local.set({ pendingReturnToList: orderId, pendingReturnTitle: unmappedTitle || "" });
-        if (prepBtn.tagName === "A") {
-          prepBtn.addEventListener("click", (e) => e.preventDefault(), { once: true });
-        }
-        prepBtn.click();
-        log("DETAIL", `[PREPARE-ONLY] ✅ Clicked.`);
-        await sleep(1500);
-      } else {
-        warn("DETAIL", `[PREPARE-ONLY] "Preparing" button not found — already past NEW ORDER?`);
-        await chrome.storage.local.set({ pendingReturnToList: orderId, pendingReturnTitle: unmappedTitle || "" });
-      }
-
-      chrome.runtime.sendMessage({ type: "MARK_PREPARED_ONLY", orderId }).catch(() => {});
-      recordAnalytics(orderId, unmappedTitle || "", 1);
-      await chrome.storage.local.remove(["pendingReturnToList", "pendingReturnTitle"]);
-      window.location.href = "https://www.z2u.com/sellOrder/index";
+    if (pendingConfirmOrderId && pendingConfirmOrderId === orderId) {
+      const qty = pendingConfirmQty || 1;
+      log("DETAIL", `[0] ↩ Resuming confirmDeliveredFlow for ${orderId} (qty=${qty}) after page reload.`);
+      await chrome.storage.local.remove(["pendingConfirmOrderId", "pendingConfirmQty"]);
+      await confirmDeliveredFlow(qty);
       return;
     }
 
@@ -1165,18 +972,6 @@
       chrome.runtime.sendMessage({ type: "MARK_PREPARED_ONLY", orderId }).catch(() => {});
       recordAnalytics(orderId, pendingReturnTitle || "", 1);
       window.location.href = "https://www.z2u.com/sellOrder/index";
-      return;
-    }
-
-    // ── [0] Resume pending Confirm Delivery after page reload ─────────────────
-    const { pendingConfirmOrderId, pendingConfirmQty } = await new Promise((r) =>
-      chrome.storage.local.get(["pendingConfirmOrderId", "pendingConfirmQty"], r)
-    );
-    if (pendingConfirmOrderId && pendingConfirmOrderId === orderId) {
-      const qty = pendingConfirmQty || 1;
-      log("DETAIL", `[0] ↩ Resuming confirmDeliveredFlow for ${orderId} (qty=${qty}) after page reload.`);
-      await chrome.storage.local.remove(["pendingConfirmOrderId", "pendingConfirmQty"]);
-      await confirmDeliveredFlow(qty);
       return;
     }
 
@@ -1200,19 +995,11 @@
     const hasDelivering = pageText.includes("DELIVERING");
     const isActionable  = hasNew || hasPreparing || hasDelivering;
     log("DETAIL", `[1] Status → NEW ORDER:${hasNew} | PREPARING:${hasPreparing} | DELIVERING:${hasDelivering} | badge:"${badgeText}"`);
-
-    if (!isActionable) {
-      log("DETAIL", `[1] Order ${orderId} is not in an actionable state — skipping.`);
-      return;
-    }
+    if (!isActionable) { log("DETAIL", `[1] Order ${orderId} is not in an actionable state — skipping.`); return; }
 
     // ── [2] Title extraction ─────────────────────────────────────────────────
     let title = "";
-
-    function cleanTitle(raw) {
-      return (raw || "").replace(/^[\s:]+/, "").trim();
-    }
-
+    function cleanTitle(raw) { return (raw || "").replace(/^[\s:]+/, "").trim(); }
     const allEls = Array.from(document.querySelectorAll("*"));
     for (const el of allEls) {
       if (el.childElementCount > 0) continue;
@@ -1225,7 +1012,6 @@
         break;
       }
     }
-
     if (!title) {
       for (const row of document.querySelectorAll("tr, dl dt, .info-row, .detail-row")) {
         if ((row.textContent || "").toLowerCase().includes("product title")) {
@@ -1236,29 +1022,19 @@
         }
       }
     }
-
     if (!title) {
       const el = document.querySelector('[class*="productTitle"], [class*="product-title"], [class*="goodsName"]');
       title = cleanTitle(el?.textContent?.trim() || "");
       log("DETAIL", `[2C] Class-based approach → "${title.slice(0, 80)}"`);
     }
-
     log("DETAIL", `[2] Final title: "${title}"`);
-
-    if (!title) {
-      err("DETAIL", "[2] Could not extract product title from page.");
-      return;
-    }
+    if (!title) { err("DETAIL", "[2] Could not extract product title from page."); return; }
 
     // ── [3] Mapping check ────────────────────────────────────────────────────
     const mappings = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: "GET_MAPPINGS" }, (r) =>
-        resolve(r?.mappings || {})
-      );
+      chrome.runtime.sendMessage({ type: "GET_MAPPINGS" }, (r) => resolve(r?.mappings || {}));
     });
-
     log("DETAIL", `[3] Mappings available: ${JSON.stringify(Object.keys(mappings))}`);
-
     function normalise(s) { return s.replace(/\s+/g, " ").trim(); }
     let resolvedTitle = title;
     if (!mappings[title]) {
@@ -1271,43 +1047,19 @@
         warn("DETAIL", `[3] No mapping for title: "${title}"`);
         log("DETAIL", `[3] Available keys: ${JSON.stringify(keys)}`);
         await chrome.storage.local.remove(["pendingOrderId", "pendingTitle"]);
-
-        if (prepareOnly && hasNew) {
-          const prepBtn = Array.from(document.querySelectorAll("button, a"))
-            .find((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
-          if (prepBtn) {
-            log("DETAIL", `[3] Unmapped NEW ORDER (automation) — clicking Preparing.`);
-            prepBtn.click();
-          } else {
-            warn("DETAIL", `[3] Unmapped — Preparing button not found.`);
-          }
-          chrome.runtime.sendMessage({ type: "MARK_PROCESSED", orderId }).catch(() => {});
-          window.location.href = "https://www.z2u.com/sellOrder/index";
-        } else {
-          log("DETAIL", `[3] Unmapped order — user navigated manually. Leaving page alone.`);
-        }
+        log("DETAIL", `[3] Unmapped order — leaving page alone.`);
         return;
       }
     }
-
     const mappingEntry = normalizeMappingEntry(mappings[resolvedTitle]);
-    if (!mappingEntry?.serviceId) {
-      err("DETAIL", `[3] Mapping found but invalid for "${resolvedTitle}"`);
-      return;
-    }
+    if (!mappingEntry?.serviceId) { err("DETAIL", `[3] Mapping found but invalid for "${resolvedTitle}"`); return; }
     log("DETAIL", `[3] ✅ Mapping found → productId="${mappingEntry.serviceId}" deliveryMethod="${mappingEntry.deliveryMethod}"`);
 
     // ── [4] Dedup ─────────────────────────────────────────────────────────────
-    if (sessionDone.has(orderId)) {
-      log("DETAIL", `[4] Already in progress this session — skipping.`);
-      return;
-    }
+    if (sessionDone.has(orderId)) { log("DETAIL", `[4] Already in progress this session — skipping.`); return; }
     const alreadyDone = await bgIsProcessed(orderId);
     log("DETAIL", `[4] bgIsProcessed → ${alreadyDone}`);
-    if (alreadyDone) {
-      log("DETAIL", `[4] Order ${orderId} already completed. Use popup → Clear History to retry.`);
-      return;
-    }
+    if (alreadyDone) { log("DETAIL", `[4] Order ${orderId} already completed. Use popup → Clear History to retry.`); return; }
     sessionDone.add(orderId);
     await chrome.storage.local.remove(["pendingOrderId", "pendingTitle"]);
 
@@ -1325,9 +1077,7 @@
       }
     }
     log("DETAIL", `[5] Using quantity: ${quantity}`);
-
     recordAnalytics(orderId, title, quantity);
-
     log("DETAIL", `🚀 Starting fulfillment | orderId=${orderId} | qty=${quantity}`);
     dumpButtons("DETAIL-BEFORE-PREPARING");
 
@@ -1344,11 +1094,7 @@
       const hasPrepBtn      = allBtnsNow.some((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
 
       if (!hasStartTrading) {
-        if (!hasPrepBtn) {
-          err("DETAIL", "[6] CHAT: Neither PREPARING nor START TRADING found — cannot proceed.");
-          dumpButtons("CHAT-[6]-STUCK");
-          return;
-        }
+        if (!hasPrepBtn) { err("DETAIL", "[6] CHAT: Neither PREPARING nor START TRADING found — cannot proceed."); dumpButtons("CHAT-[6]-STUCK"); return; }
         const preparingBtn = allBtnsNow.find((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
         log("DETAIL", `[6] CHAT: Clicking PREPARING`);
         preparingBtn.click();
@@ -1361,11 +1107,7 @@
       log("DETAIL", "[7] CHAT: Waiting for START TRADING button (10s)…");
       dumpButtons("CHAT-BEFORE-START-TRADING");
       const startBtn = await waitForElementByText("button, a", "START TRADING", 10000);
-      if (!startBtn) {
-        err("DETAIL", "[7] CHAT: START TRADING button not found after 10s.");
-        dumpButtons("CHAT-[7]-FAILED");
-        return;
-      }
+      if (!startBtn) { err("DETAIL", "[7] CHAT: START TRADING button not found after 10s."); dumpButtons("CHAT-[7]-FAILED"); return; }
       log("DETAIL", `[7] CHAT: Clicking START TRADING`);
       startBtn.click();
       log("DETAIL", "[7] CHAT: ✅ Clicked START TRADING. Waiting 2.5s…");
@@ -1373,13 +1115,10 @@
 
       log("DETAIL", "[8] CHAT: Waiting for CONFIRM button in modal (8s)…");
       dumpButtons("CHAT-AFTER-START-TRADING");
-
       const allConfirmBtns = await (async () => {
         const end = Date.now() + 8000;
         while (Date.now() < end) {
-          const btns = Array.from(document.querySelectorAll("button")).filter(
-            (b) => b.textContent?.trim().toUpperCase() === "CONFIRM"
-          );
+          const btns = Array.from(document.querySelectorAll("button")).filter((b) => b.textContent?.trim().toUpperCase() === "CONFIRM");
           if (btns.length) return btns;
           await sleep(400);
         }
@@ -1399,14 +1138,10 @@
       // ── [9] Fetch M3U URL from backend ──────────────────────────────────
       log("DETAIL", "[9] CHAT: Calling prepare-order to get M3U URL…");
       let m3uUrl = null;
-
       try {
         const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
         log("DETAIL", "[9] CHAT: prepare-order response:", JSON.stringify(prepared).slice(0, 500));
-
-        // Extract M3U URL from the Lfollowers response
         const raw = prepared?.delivered_data || prepared?.m3u_url || prepared?.url || prepared?.data || "";
-
         if (typeof raw === 'string' && raw.includes('get.php')) {
           const match = raw.match(/https?:\/\/[^\s'"<>]+get\.php\?[^'"<>\s]+/i);
           if (match) m3uUrl = match[0].split(/\s/)[0];
@@ -1418,16 +1153,12 @@
         } else if (prepared?.url) {
           m3uUrl = prepared.url;
         }
-
         log("DETAIL", `[9] CHAT: M3U URL extracted: "${(m3uUrl || "").slice(0, 80)}"`);
       } catch (e) {
         err("DETAIL", `[9] CHAT: prepare-order failed: ${e.message}`);
       }
 
-      if (!m3uUrl) {
-        err("DETAIL", "[9] CHAT: No M3U URL found in Lfollowers response — cannot proceed.");
-        return;
-      }
+      if (!m3uUrl) { err("DETAIL", "[9] CHAT: No M3U URL found in Lfollowers response — cannot proceed."); return; }
 
       // ── [10] Run the full chat delivery pipeline ─────────────────────────────
       const chatOk = await runChatDelivery(orderId, resolvedTitle, quantity, m3uUrl);
@@ -1441,7 +1172,7 @@
       log("DETAIL", "↩ Returning to order list in 3s…");
       await sleep(3000);
       window.location.href = "/sellOrder/index";
-      return;
+      return; // ✅ CRITICAL: prevents falling through to the file delivery path below
     }
 
     // ── DIRECT DELIVERY PATH ──────────────────────────────────────────────────
@@ -1449,10 +1180,7 @@
       log("DETAIL", "[9] deliveryMethod=direct — preparing payload (no XLSX upload).");
       const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
       const ok = await runDirectDelivery(prepared.accounts || [], quantity);
-      if (ok) {
-        await bgMarkProcessed(orderId);
-        log("DETAIL", `[11] ✅ Direct delivery completed for ${orderId}.`);
-      }
+      if (ok) { await bgMarkProcessed(orderId); log("DETAIL", `[11] ✅ Direct delivery completed for ${orderId}.`); }
       return;
     }
 
@@ -1463,10 +1191,8 @@
       const byText = allAnchors.find((el) => {
         const t = el.textContent?.trim().toUpperCase() || "";
         return t.includes("DOWNLOAD") && (
-          t.includes("TEMPLATE") ||
-          t.includes("BULK DELIVERY") ||
-          t.includes("DELIVERY FORM") ||
-          t.includes("SELL FORM")
+          t.includes("TEMPLATE") || t.includes("BULK DELIVERY") ||
+          t.includes("DELIVERY FORM") || t.includes("SELL FORM")
         );
       });
       if (byText) return byText;
@@ -1482,12 +1208,10 @@
     if (templateLinkEl) {
       log("DETAIL", `[6] Template link found: text="${templateLinkEl.textContent?.trim()}" href="${templateLinkEl.getAttribute("href")}"`);
     }
-
     log("DETAIL", `[6] Page state → hasTemplateLink:${hasTemplateLink} | hasStartTrading:${hasStartTrading} | hasPrepBtn:${hasPrepBtn}`);
     dumpButtons("DETAIL-STATE-CHECK");
 
-    const hasWaitForConfirm = badgeText.includes("WAIT FOR CONFIRM") ||
-                              badgeText.includes("WAITING FOR CONFIRM");
+    const hasWaitForConfirm = badgeText.includes("WAIT FOR CONFIRM") || badgeText.includes("WAITING FOR CONFIRM");
     if (hasWaitForConfirm) {
       log("DETAIL", `[6] 🟡 Badge="${badgeText}" → WAIT FOR CONFIRMED — skipping upload, going straight to confirm delivery.`);
       return await confirmDeliveredFlow(quantity);
@@ -1495,11 +1219,7 @@
 
     if (!hasTemplateLink) {
       if (!hasStartTrading) {
-        if (!hasPrepBtn) {
-          err("DETAIL", "[6] FILE: Neither PREPARING nor START TRADING nor template link found.");
-          dumpButtons("DETAIL-[6]-STUCK");
-          return;
-        }
+        if (!hasPrepBtn) { err("DETAIL", "[6] FILE: Neither PREPARING nor START TRADING nor template link found."); dumpButtons("DETAIL-[6]-STUCK"); return; }
         const preparingBtn = allBtnsNow.find((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
         log("DETAIL", `[6] FILE: Clicking PREPARING: tag=${preparingBtn.tagName} class="${preparingBtn.className}"`);
         preparingBtn.click();
@@ -1512,11 +1232,7 @@
       log("DETAIL", "[7] FILE: Waiting for START TRADING button (10s)…");
       dumpButtons("DETAIL-BEFORE-START-TRADING");
       const startBtn = await waitForElementByText("button, a", "START TRADING", 10000);
-      if (!startBtn) {
-        err("DETAIL", "[7] FILE: START TRADING button not found after 10s.");
-        dumpButtons("DETAIL-[7]-FAILED");
-        return;
-      }
+      if (!startBtn) { err("DETAIL", "[7] FILE: START TRADING button not found after 10s."); dumpButtons("DETAIL-[7]-FAILED"); return; }
       log("DETAIL", `[7] FILE: Clicking START TRADING: tag=${startBtn.tagName} text="${startBtn.textContent?.trim()}" class="${startBtn.className}"`);
       startBtn.click();
       log("DETAIL", "[7] FILE: ✅ Clicked START TRADING. Waiting 2.5s…");
@@ -1524,13 +1240,10 @@
 
       log("DETAIL", "[8] FILE: Waiting for CONFIRM button in modal (8s)…");
       dumpButtons("DETAIL-AFTER-START-TRADING");
-
       const allConfirmBtns = await (async () => {
         const end = Date.now() + 8000;
         while (Date.now() < end) {
-          const btns = Array.from(document.querySelectorAll("button")).filter(
-            (b) => b.textContent?.trim().toUpperCase() === "CONFIRM"
-          );
+          const btns = Array.from(document.querySelectorAll("button")).filter((b) => b.textContent?.trim().toUpperCase() === "CONFIRM");
           if (btns.length) return btns;
           await sleep(400);
         }
@@ -1557,8 +1270,7 @@
     if (!templateLink) {
       err("DETAIL", "[9] FILE: Template download link NOT found.");
       log("DETAIL", "[9] FILE: All <a> elements on page:",
-        Array.from(document.querySelectorAll("a")).map((a) => `"${a.textContent?.trim()}" → ${a.getAttribute("href")}`).join(" | ")
-      );
+        Array.from(document.querySelectorAll("a")).map((a) => `"${a.textContent?.trim()}" → ${a.getAttribute("href")}`).join(" | "));
       return;
     }
     const templateUrl = templateLink.getAttribute("href");
@@ -1569,27 +1281,14 @@
     log("DETAIL", "[10] FILE: Sending to backend…");
     let filledBytes;
     try {
-      filledBytes = await sendToBackend({
-        orderId,
-        title: resolvedTitle,
-        quantity,
-        templateBlob: Array.from(templateBlob),
-        templateFilename,
-      });
+      filledBytes = await sendToBackend({ orderId, title: resolvedTitle, quantity, templateBlob: Array.from(templateBlob), templateFilename });
       log("DETAIL", `[10] ✅ Backend success. Filled file size: ${filledBytes.length} bytes`);
-    } catch (backendErr) {
-      err("DETAIL", `[10] FILE: Backend failed: ${backendErr.message}`);
-      return;
-    }
+    } catch (backendErr) { err("DETAIL", `[10] FILE: Backend failed: ${backendErr.message}`); return; }
 
     log("DETAIL", "[11] FILE: Uploading filled file…");
     const uploaded = await uploadAndConfirm(filledBytes, templateFilename, quantity);
-    if (uploaded) {
-      await bgMarkProcessed(orderId);
-      log("DETAIL", `[11] ✅ Order ${orderId} fully completed and marked processed.`);
-    } else {
-      warn("DETAIL", "[11] FILE: Upload/confirm step did not complete.");
-    }
+    if (uploaded) { await bgMarkProcessed(orderId); log("DETAIL", `[11] ✅ Order ${orderId} fully completed and marked processed.`); }
+    else { warn("DETAIL", "[11] FILE: Upload/confirm step did not complete."); }
 
     log("DETAIL", "↩ Returning to order list in 3s to process next order…");
     await sleep(3000);
@@ -1600,11 +1299,7 @@
 
   function init() {
     chrome.storage.local.get(["autoPaused"], ({ autoPaused }) => {
-      if (autoPaused) {
-        log("INIT", "⏸ Auto-processing is PAUSED. Network capture still active. Resume from popup.");
-        return;
-      }
-
+      if (autoPaused) { log("INIT", "⏸ Auto-processing is PAUSED. Network capture still active. Resume from popup."); return; }
       if (isListPage) {
         log("INIT", "▶ Running on LIST page. Will scan every 30s.");
         setTimeout(runListPage, 2500);
