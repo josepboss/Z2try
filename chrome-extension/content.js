@@ -596,23 +596,49 @@
     return config[normalized] || config[baseDomain?.trim()] || [];
   }
 
-  function formatChatMessage(parsed) {
+  /**
+   * Format the chat message with credentials, optional alternative domains,
+   * and a secondary Samsung/LG link for megaott.
+   *
+   * @param {{ username: string, password: string, baseDomain: string }} parsed
+   * @param {string | null} extraSamsungLgUrl
+   * @returns {string}
+   */
+  function formatChatMessage(parsed, extraSamsungLgUrl = null) {
     if (!parsed || !parsed.username || !parsed.password || !parsed.baseDomain) {
       log("CHAT-DELIVERY", "formatChatMessage: invalid parsed input");
       return '';
     }
     const { username, password, baseDomain } = parsed;
     const altDomains = getAlternativeDomains(baseDomain);
+
     const lines = [
-      'Login Account', `: ${username}`, '',
-      'Login Password', `: ${password}`, '',
-      'Domain', `: ${baseDomain}`,
+      'Login Account',
+      `: ${username}`,
+      '',
+      'Login Password',
+      `: ${password}`,
+      '',
+      'Domain',
+      `: ${baseDomain}`,
     ];
+
     if (altDomains.length > 0) {
-      for (const alt of altDomains) lines.push(`alternative domain : ${alt}`);
+      for (const alt of altDomains) {
+        lines.push(`alternative domain : ${alt}`);
+      }
     }
+
+    // Append the Samsung/LG-specific link for megaott if present
+    if (extraSamsungLgUrl) {
+      lines.push('');
+      lines.push('Samsung / LG Link');
+      lines.push(`: ${extraSamsungLgUrl}`);
+      log("CHAT-DELIVERY", `formatChatMessage: ✅ Appended Samsung/LG link: "${extraSamsungLgUrl.slice(0, 80)}"`);
+    }
+
     const message = lines.join('\n');
-    log("CHAT-DELIVERY", `formatChatMessage: ✅ ${altDomains.length} alt domains — ${lines.length} lines`);
+    log("CHAT-DELIVERY", `formatChatMessage: ✅ ${altDomains.length} alt domains + samsungLg=${!!extraSamsungLgUrl} — ${lines.length} lines`);
     return message;
   }
 
@@ -777,34 +803,53 @@
     return true;
   }
 
-  async function runChatDelivery(orderId, title, quantity, m3uUrl) {
-    log("CHAT-DELIVERY", `🚀 Starting chat delivery | orderId=${orderId} | m3uUrl="${(m3uUrl || "").slice(0, 80)}"`);
+  /**
+   * Main chat delivery pipeline for a single order.
+   * Orchestrates: parse M3U → fill form → open chat → send message.
+   *
+   * @param {string} orderId
+   * @param {string} title
+   * @param {number} quantity
+   * @param {string} m3uUrl
+   * @param {string | null} extraSamsungLgUrl  — the dns_link_for_samsung_lg for megaott
+   * @returns {Promise<boolean>}
+   */
+  async function runChatDelivery(orderId, title, quantity, m3uUrl, extraSamsungLgUrl = null) {
+    log("CHAT-DELIVERY", `🚀 Starting chat delivery | orderId=${orderId} | m3uUrl="${(m3uUrl || "").slice(0, 80)}" | samsungLg=${!!extraSamsungLgUrl}`);
+
     if (!m3uUrl) {
       err("CHAT-DELIVERY", "No M3U URL provided — cannot extract credentials");
       return false;
     }
+
     const parsed = parseM3uUrl(m3uUrl);
     if (!parsed) {
       err("CHAT-DELIVERY", `Failed to parse M3U URL: "${m3uUrl.slice(0, 80)}`);
       return false;
     }
+
     const formFilled = fillDeliveryForm(parsed);
     if (!formFilled) warn("CHAT-DELIVERY", `Form fill was incomplete — continuing anyway`);
     await sleep(800);
-    const message = formatChatMessage(parsed);
+
+    // Pass the extra Samsung/LG URL through to the formatter
+    const message = formatChatMessage(parsed, extraSamsungLgUrl);
     if (!message) {
       err("CHAT-DELIVERY", "Failed to format chat message");
       return false;
     }
     log("CHAT-DELIVERY", `Message preview:\n${message}`);
+
     const chatHref = openChatWindow();
     if (!chatHref) warn("CHAT-DELIVERY", `Could not open chat window — will try direct send`);
     await sleep(3000);
+
     const sent = await sendChatMessage(message, orderId);
     if (!sent) {
       warn("CHAT-DELIVERY", `Message send failed — chat may not have opened correctly`);
       return false;
     }
+
     log("CHAT-DELIVERY", `✅ Chat message sent for order ${orderId}`);
     return true;
   }
@@ -1138,30 +1183,49 @@
       // ── [9] Fetch M3U URL from backend ──────────────────────────────────
       log("DETAIL", "[9] CHAT: Calling prepare-order to get M3U URL…");
       let m3uUrl = null;
+      let extraSamsungLgUrl = null; // Holds the secondary link if provider is megaott
+
       try {
         const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
         log("DETAIL", "[9] CHAT: prepare-order response:", JSON.stringify(prepared).slice(0, 500));
-        const raw = prepared?.delivered_data || prepared?.m3u_url || prepared?.url || prepared?.data || "";
-        if (typeof raw === 'string' && raw.includes('get.php')) {
-          const match = raw.match(/https?:\/\/[^\s'"<>]+get\.php\?[^'"<>\s]+/i);
-          if (match) m3uUrl = match[0].split(/\s/)[0];
-        } else if (typeof raw === 'string' && raw.includes('.m3u')) {
-          const match = raw.match(/https?:\/\/[^\s'"<>]+\.m3u[8]?[^\s'"<>]*/i);
-          if (match) m3uUrl = match[0].split(/\s/)[0];
-        } else if (prepared?.m3u_url) {
-          m3uUrl = prepared.m3u_url;
-        } else if (prepared?.url) {
-          m3uUrl = prepared.url;
+
+        // Handle explicit API error fields
+        if (prepared?.error) {
+          throw new Error(`Lfollowers API Error: ${prepared.error}`);
         }
+
+        const order = prepared?.order;
+        if (order) {
+          log("DETAIL", `[9] CHAT: Identified provider "${order.provider || 'unknown'}".`);
+
+          // Fallback chain for primary M3U link extraction: m3u_url → dns_link → url
+          m3uUrl = order.m3u_url || order.dns_link || order.url;
+
+          // If megaott, extract the secondary mandatory link for Samsung/LG
+          if (order.provider === "megaott" && order.dns_link_for_samsung_lg) {
+            extraSamsungLgUrl = order.dns_link_for_samsung_lg;
+            log("DETAIL", `[9] CHAT: Captured extra Samsung/LG link for MegaOTT: "${extraSamsungLgUrl.slice(0, 80)}"`);
+          }
+        } else {
+          // Flattened root property fallbacks for legacy / non-nested responses
+          const raw = prepared?.delivered_data || prepared?.data || "";
+          if (typeof raw === 'string' && raw.startsWith('http')) {
+            m3uUrl = raw.trim().split(/\s/)[0];
+          }
+        }
+
         log("DETAIL", `[9] CHAT: M3U URL extracted: "${(m3uUrl || "").slice(0, 80)}"`);
       } catch (e) {
         err("DETAIL", `[9] CHAT: prepare-order failed: ${e.message}`);
       }
 
-      if (!m3uUrl) { err("DETAIL", "[9] CHAT: No M3U URL found in Lfollowers response — cannot proceed."); return; }
+      if (!m3uUrl) {
+        err("DETAIL", "[9] CHAT: No M3U URL found in Lfollowers response — cannot proceed.");
+        return;
+      }
 
       // ── [10] Run the full chat delivery pipeline ─────────────────────────────
-      const chatOk = await runChatDelivery(orderId, resolvedTitle, quantity, m3uUrl);
+      const chatOk = await runChatDelivery(orderId, resolvedTitle, quantity, m3uUrl, extraSamsungLgUrl);
       if (chatOk) {
         await bgMarkProcessed(orderId);
         log("DETAIL", `[11] ✅ Chat delivery completed for ${orderId}.`);
