@@ -123,7 +123,7 @@
     return true;
   }
 
-  // ── Persistent processed set ───────────────────────────────────────────────
+  // ── Persistent processed set ─────────────────────────────────────────────
 
   const sessionDone = new Set();
 
@@ -598,7 +598,6 @@
    * @returns {string[]}
    */
   function getAlternativeDomains(baseDomain) {
-    // Inline the domain config lookup to avoid import issues in content script
     const config = {
       "http://skyline-mm.com": [
         "http://example1.com",
@@ -652,12 +651,11 @@
    * Safely inject a value into a DOM input and trigger React/Vue state updates.
    * @param {HTMLInputElement} input
    * @param {string} value
-   * @returns {boolean} - true if injection succeeded
+   * @returns {boolean}
    */
   function safeInjectValue(input, value) {
     if (!input) return false;
 
-    // Method 1: Native value setter (works for React 17+ and Vue)
     const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
     if (nativeSetter) {
       nativeSetter.call(input, value);
@@ -665,7 +663,6 @@
       input.value = value;
     }
 
-    // Method 2: Try React's __reactProps onChange (React 17+ fiber)
     const reactPropsKey = Object.keys(input).find(
       (k) => k.startsWith("__reactProps") || k.startsWith("__reactInternals")
     );
@@ -684,7 +681,6 @@
       }
     }
 
-    // Method 3: Try __reactFiber memoizedProps (React 16)
     const fiberKey = Object.keys(input).find((k) => k.startsWith("__reactFiber"));
     if (fiberKey) {
       const onChange = input[fiberKey]?.memoizedProps?.onChange;
@@ -698,7 +694,6 @@
       }
     }
 
-    // Method 4: Dispatch native DOM events as belt-and-suspenders
     input.dispatchEvent(new Event("input",  { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
 
@@ -710,7 +705,7 @@
   /**
    * Fill the three Z2U delivery form fields with parsed M3U credentials.
    * @param {{ username: string, password: string, baseDomain: string }} parsed
-   * @returns {boolean} - true if all three fields were filled
+   * @returns {boolean}
    */
   function fillDeliveryForm(parsed) {
     if (!parsed) return false;
@@ -754,7 +749,7 @@
 
   /**
    * Find and click the chat trigger link (a.talkSeller) in the order row.
-   * @returns {string | null} - The chat URL if found and clicked
+   * @returns {string | null}
    */
   function openChatWindow() {
     const chatLink = document.querySelector('div.SellerChatAndOtherProduct a.talkSeller');
@@ -775,15 +770,13 @@
   /**
    * Send a message via the local Playwright bridge (bridge.py /chat-reply).
    * Falls back to direct DOM injection if bridge is unavailable.
-   *
-   * @param {string} message - Formatted credential message
+   * @param {string} message
    * @param {string} orderId
    * @returns {Promise<boolean>}
    */
   async function sendChatMessage(message, orderId) {
     if (!message) return false;
 
-    // Try bridge.py first (real keyboard events, isTrusted=true)
     try {
       const resp = await fetch("http://localhost:5000/chat-reply", {
         method: "POST",
@@ -804,7 +797,6 @@
       warn("CHAT-DELIVERY", `Bridge unreachable: ${e.message} — falling back to direct injection`);
     }
 
-    // Fallback: direct DOM injection via chat.js logic
     return sendChatMessageDirect(message);
   }
 
@@ -829,7 +821,6 @@
       return false;
     }
 
-    // Find the chat input (not in sidebar, not a search field)
     const candidates = Array.from(document.querySelectorAll('textarea, div[contenteditable="true"], input[type="text"]'))
       .filter(el => el.offsetParent && !el.closest(SIDEBAR_SEL) && !isSearchField(el));
 
@@ -838,7 +829,6 @@
       return false;
     }
 
-    // Priority: element with "message" in placeholder
     const byPlaceholder = candidates.find(el => {
       const ph = (el.placeholder || el.getAttribute("placeholder") || "").toLowerCase();
       return /message|type|write|send|reply|chat/i.test(ph);
@@ -851,7 +841,6 @@
     chatInput.click();
     await sleep(100);
 
-    // Use execCommand insertText (routed through native IME → React synthetic events)
     const execOk = document.execCommand("insertText", false, message);
     log("CHAT-DELIVERY", `sendChatMessageDirect: execCommand insertText → ${execOk}`);
 
@@ -860,7 +849,6 @@
 
     await sleep(300);
 
-    // Try to find and click the Send button
     const sendBtn = Array.from(document.querySelectorAll("button, [role='button']"))
       .find(b => {
         if (!b.offsetParent || b.closest(SIDEBAR_SEL)) return false;
@@ -875,7 +863,6 @@
       return true;
     }
 
-    // Fallback: press Enter
     const evtOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
     chatInput.dispatchEvent(new KeyboardEvent("keydown",  evtOpts));
     chatInput.dispatchEvent(new KeyboardEvent("keypress", evtOpts));
@@ -886,12 +873,11 @@
 
   /**
    * Main chat delivery pipeline for a single order.
-   * Orchestrates: parse M3U → fill form → open chat → send message → confirm delivered.
-   *
+   * Orchestrates: parse M3U → fill form → open chat → send message.
    * @param {string} orderId
    * @param {string} title
    * @param {number} quantity
-   * @param {string} m3uUrl - The M3U link from Lfollowers (or extracted from the order page)
+   * @param {string} m3uUrl - The M3U link from Lfollowers
    * @returns {Promise<boolean>}
    */
   async function runChatDelivery(orderId, title, quantity, m3uUrl) {
@@ -902,21 +888,18 @@
       return false;
     }
 
-    // Step 1: Parse M3U URL
     const parsed = parseM3uUrl(m3uUrl);
     if (!parsed) {
       err("CHAT-DELIVERY", `Failed to parse M3U URL: "${m3uUrl.slice(0, 80)}"`);
       return false;
     }
 
-    // Step 2: Fill the Z2U delivery form fields
     const formFilled = fillDeliveryForm(parsed);
     if (!formFilled) {
       warn("CHAT-DELIVERY", `Form fill was incomplete — continuing anyway`);
     }
     await sleep(800);
 
-    // Step 3: Format the chat message
     const message = formatChatMessage(parsed);
     if (!message) {
       err("CHAT-DELIVERY", "Failed to format chat message");
@@ -924,16 +907,13 @@
     }
     log("CHAT-DELIVERY", `Message preview:\n${message}`);
 
-    // Step 4: Open the chat window (click a.talkSeller)
     const chatHref = openChatWindow();
     if (!chatHref) {
       warn("CHAT-DELIVERY", `Could not open chat window — will try direct send`);
     }
 
-    // Wait for the new chat tab/window to load
     await sleep(3000);
 
-    // Step 5: Send the formatted message via bridge or direct injection
     const sent = await sendChatMessage(message, orderId);
     if (!sent) {
       warn("CHAT-DELIVERY", `Message send failed — chat may not have opened correctly`);
@@ -1331,7 +1311,7 @@
     sessionDone.add(orderId);
     await chrome.storage.local.remove(["pendingOrderId", "pendingTitle"]);
 
-    // ── [5] Quantity ──────────────────────────────────────────────────────────
+    // ── [5] Quantity ────────────────────────────────────────────────────────────
     let quantity = 1;
     const allNodes = Array.from(document.querySelectorAll("*"));
     for (let j = 0; j < allNodes.length; j++) {
@@ -1351,214 +1331,264 @@
     log("DETAIL", `🚀 Starting fulfillment | orderId=${orderId} | qty=${quantity}`);
     dumpButtons("DETAIL-BEFORE-PREPARING");
 
-    try {
-      // ── State detection ─────────────────────────────────────────────────────
-      function findTemplateLink() {
-        const allAnchors = Array.from(document.querySelectorAll("a, button"));
-        const byText = allAnchors.find((el) => {
-          const t = el.textContent?.trim().toUpperCase() || "";
-          return t.includes("DOWNLOAD") && (
-            t.includes("TEMPLATE") ||
-            t.includes("BULK DELIVERY") ||
-            t.includes("DELIVERY FORM") ||
-            t.includes("SELL FORM")
-          );
-        });
-        if (byText) return byText;
-        return document.querySelector('a[href*=".xlsx"], a[download][href*="sell"]');
-      }
+    // ── [6] Determine delivery method ───────────────────────────────────────────
+    const deliveryMethod = mappingEntry.deliveryMethod || "file";
+    log("DETAIL", `[6] Delivery method: "${deliveryMethod}"`);
+
+    // ── CHAT DELIVERY PATH ────────────────────────────────────────────────────
+    if (deliveryMethod === "chat") {
+      log("DETAIL", `[6] 🚀 CHAT DELIVERY path — clicking PREPARING / START TRADING / CONFIRM first, then routing to M3U pipeline`);
 
       const allBtnsNow = Array.from(document.querySelectorAll("button, a"));
-      const templateLinkEl  = findTemplateLink();
-      const hasTemplateLink = !!templateLinkEl;
       const hasStartTrading = allBtnsNow.some((b) => b.textContent?.trim().toUpperCase().includes("START TRADING"));
       const hasPrepBtn      = allBtnsNow.some((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
 
-      if (templateLinkEl) {
-        log("DETAIL", `[6] Template link found: text="${templateLinkEl.textContent?.trim()}" href="${templateLinkEl.getAttribute("href")}"`);
-      }
-
-      log("DETAIL", `[6] Page state → hasTemplateLink:${hasTemplateLink} | hasStartTrading:${hasStartTrading} | hasPrepBtn:${hasPrepBtn}`);
-      dumpButtons("DETAIL-STATE-CHECK");
-
-      const hasWaitForConfirm = badgeText.includes("WAIT FOR CONFIRM") ||
-                                badgeText.includes("WAITING FOR CONFIRM");
-      if (hasWaitForConfirm) {
-        log("DETAIL", `[6] 🟡 Badge="${badgeText}" → WAIT FOR CONFIRMED — skipping upload, going straight to confirm delivery.`);
-        return await confirmDeliveredFlow(quantity);
-      }
-
-      if (!hasTemplateLink) {
-        if (!hasStartTrading) {
-          if (!hasPrepBtn) {
-            err("DETAIL", "[6] Neither PREPARING nor START TRADING nor template link found.");
-            dumpButtons("DETAIL-[6]-STUCK");
-            return;
-          }
-          const preparingBtn = allBtnsNow.find((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
-          log("DETAIL", `[6] Clicking PREPARING: tag=${preparingBtn.tagName} class="${preparingBtn.className}"`);
-          preparingBtn.click();
-          log("DETAIL", "[6] ✅ Clicked PREPARING. Waiting 3s…");
-          await sleep(3000);
-        } else {
-          log("DETAIL", "[6] START TRADING already visible — skipping PREPARING.");
-        }
-
-        log("DETAIL", "[7] Waiting for START TRADING button (10s)…");
-        dumpButtons("DETAIL-BEFORE-START-TRADING");
-        const startBtn = await waitForElementByText("button, a", "START TRADING", 10000);
-        if (!startBtn) {
-          err("DETAIL", "[7] START TRADING button not found after 10s.");
-          dumpButtons("DETAIL-[7]-FAILED");
+      if (!hasStartTrading) {
+        if (!hasPrepBtn) {
+          err("DETAIL", "[6] CHAT: Neither PREPARING nor START TRADING found — cannot proceed.");
+          dumpButtons("CHAT-[6]-STUCK");
           return;
         }
-        log("DETAIL", `[7] Clicking START TRADING: tag=${startBtn.tagName} text="${startBtn.textContent?.trim()}" class="${startBtn.className}"`);
-        startBtn.click();
-        log("DETAIL", "[7] ✅ Clicked START TRADING. Waiting 2.5s…");
-        await sleep(2500);
-
-        log("DETAIL", "[8] Waiting for CONFIRM button in modal (8s)…");
-        dumpButtons("DETAIL-AFTER-START-TRADING");
-
-        const allConfirmBtns = await (async () => {
-          const end = Date.now() + 8000;
-          while (Date.now() < end) {
-            const btns = Array.from(document.querySelectorAll("button")).filter(
-              (b) => b.textContent?.trim().toUpperCase() === "CONFIRM"
-            );
-            if (btns.length) return btns;
-            await sleep(400);
-          }
-          return [];
-        })();
-
-        if (allConfirmBtns.length) {
-          const green = allConfirmBtns[allConfirmBtns.length - 1];
-          log("DETAIL", `[8] Found ${allConfirmBtns.length} CONFIRM btn(s), clicking last: class="${green.className}"`);
-          green.click();
-          log("DETAIL", "[8] ✅ Clicked CONFIRM. Waiting 3s…");
-          await sleep(3000);
-        } else {
-          warn("DETAIL", "[8] CONFIRM modal not found — continuing anyway.");
-          dumpButtons("DETAIL-[8]-NO-MODAL");
-        }
-      } else {
-        log("DETAIL", "[6-8] Template link already on page — order is in Delivering state. Jumping to download.");
-      }
-
-      // ══════════════════════════════════════════════════════════════════════
-      //  DELIVERY METHOD ROUTING
-      // ══════════════════════════════════════════════════════════════════════
-
-      const deliveryMethod = mappingEntry.deliveryMethod || "file";
-      log("DETAIL", `[9] Delivery method: "${deliveryMethod}"`);
-
-      // ── CHAT DELIVERY ──────────────────────────────────────────────────────
-      if (deliveryMethod === "chat") {
-        log("DETAIL", `[9] 🚀 CHAT DELIVERY path — calling prepare-order for M3U link`);
-
-        let m3uUrl = null;
-
-        try {
-          const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
-          log("DETAIL", `[9] prepare-order response:`, JSON.stringify(prepared).slice(0, 500));
-
-          // The Lfollowers response for chat delivery contains an M3U URL
-          // It could be in: delivered_data, m3u_url, url, data, or the formattedCredentials field
-          const raw = prepared?.delivered_data || prepared?.m3u_url || prepared?.url || prepared?.data || prepared?.formattedCredentials || "";
-
-          // Try to extract M3U URL from the raw response
-          if (typeof raw === 'string' && raw.includes('get.php')) {
-            // Direct M3U URL in delivered_data
-            const match = raw.match(/https?:\/\/[^\s'"<>]+get\.php\?[^'"<>\s]+/i);
-            if (match) m3uUrl = match[0].split(/\s/)[0];
-          } else if (typeof raw === 'string' && raw.includes('.m3u')) {
-            const match = raw.match(/https?:\/\/[^\s'"<>]+\.m3u[8]?[^\s'"<>]*/i);
-            if (match) m3uUrl = match[0].split(/\s/)[0];
-          } else if (prepared?.m3u_url) {
-            m3uUrl = prepared.m3u_url;
-          } else if (prepared?.url) {
-            m3uUrl = prepared.url;
-          }
-
-          log("DETAIL", `[9] M3U URL extracted: "${(m3uUrl || "").slice(0, 80)}"`);
-        } catch (e) {
-          err("DETAIL", `[9] prepare-order failed: ${e.message}`);
-        }
-
-        if (!m3uUrl) {
-          warn("DETAIL", `[9] No M3U URL found in Lfollowers response — cannot proceed with chat delivery`);
-          return;
-        }
-
-        const chatOk = await runChatDelivery(orderId, resolvedTitle, quantity, m3uUrl);
-        if (chatOk) {
-          await bgMarkProcessed(orderId);
-          log("DETAIL", `[11] ✅ Chat delivery completed for ${orderId}.`);
-        } else {
-          warn("DETAIL", "[11] Chat delivery did not complete successfully.");
-        }
-
-        log("DETAIL", "↩ Returning to order list in 3s…");
+        const preparingBtn = allBtnsNow.find((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
+        log("DETAIL", `[6] CHAT: Clicking PREPARING`);
+        preparingBtn.click();
+        log("DETAIL", "[6] CHAT: ✅ Clicked PREPARING. Waiting 3s…");
         await sleep(3000);
-        window.location.href = "/sellOrder/index";
-        return;
-      }
-
-      // ── DIRECT DELIVERY ────────────────────────────────────────────────────
-      if (deliveryMethod === "direct") {
-        log("DETAIL", "[9] deliveryMethod=direct — preparing payload (no XLSX upload).");
-        const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
-        const ok = await runDirectDelivery(prepared.accounts || [], quantity);
-        if (ok) {
-          await bgMarkProcessed(orderId);
-          log("DETAIL", `[11] ✅ Direct delivery completed for ${orderId}.`);
-        }
-        return;
-      }
-
-      // ── FILE DELIVERY (default) ────────────────────────────────────────────
-      log("DETAIL", "[9] Looking for template download link…");
-      const templateLink = findTemplateLink();
-      if (!templateLink) {
-        err("DETAIL", "[9] Template download link NOT found.");
-        log("DETAIL", "[9] All <a> elements on page:",
-          Array.from(document.querySelectorAll("a")).map((a) => `"${a.textContent?.trim()}" → ${a.getAttribute("href")}`).join(" | ")
-        );
-        return;
-      }
-      const templateUrl = templateLink.getAttribute("href");
-      log("DETAIL", `[9] Template link: text="${templateLink.textContent?.trim()}" href="${templateUrl}"`);
-      const { bytes: templateBlob, filename: templateFilename } = await downloadBlob(templateUrl);
-      log("DETAIL", `[9] Original template filename: "${templateFilename}"`);
-
-      log("DETAIL", "[10] Sending to backend…");
-      let filledBytes;
-      try {
-        filledBytes = await sendToBackend({
-          orderId,
-          title: resolvedTitle,
-          quantity,
-          templateBlob: Array.from(templateBlob),
-          templateFilename,
-        });
-        log("DETAIL", `[10] ✅ Backend success. Filled file size: ${filledBytes.length} bytes`);
-      } catch (backendErr) {
-        err("DETAIL", `[10] Backend failed: ${backendErr.message}`);
-        return;
-      }
-
-      log("DETAIL", "[11] Uploading filled file…");
-      const uploaded = await uploadAndConfirm(filledBytes, templateFilename, quantity);
-      if (uploaded) {
-        await bgMarkProcessed(orderId);
-        log("DETAIL", `[11] ✅ Order ${orderId} fully completed and marked processed.`);
       } else {
-        warn("DETAIL", "[11] Upload/confirm step did not complete.");
+        log("DETAIL", "[6] CHAT: START TRADING already visible — skipping PREPARING.");
       }
 
-    } catch (e) {
-      err("DETAIL", `Unhandled exception:`, e);
+      log("DETAIL", "[7] CHAT: Waiting for START TRADING button (10s)…");
+      dumpButtons("CHAT-BEFORE-START-TRADING");
+      const startBtn = await waitForElementByText("button, a", "START TRADING", 10000);
+      if (!startBtn) {
+        err("DETAIL", "[7] CHAT: START TRADING button not found after 10s.");
+        dumpButtons("CHAT-[7]-FAILED");
+        return;
+      }
+      log("DETAIL", `[7] CHAT: Clicking START TRADING`);
+      startBtn.click();
+      log("DETAIL", "[7] CHAT: ✅ Clicked START TRADING. Waiting 2.5s…");
+      await sleep(2500);
+
+      log("DETAIL", "[8] CHAT: Waiting for CONFIRM button in modal (8s)…");
+      dumpButtons("CHAT-AFTER-START-TRADING");
+
+      const allConfirmBtns = await (async () => {
+        const end = Date.now() + 8000;
+        while (Date.now() < end) {
+          const btns = Array.from(document.querySelectorAll("button")).filter(
+            (b) => b.textContent?.trim().toUpperCase() === "CONFIRM"
+          );
+          if (btns.length) return btns;
+          await sleep(400);
+        }
+        return [];
+      })();
+
+      if (allConfirmBtns.length) {
+        const green = allConfirmBtns[allConfirmBtns.length - 1];
+        log("DETAIL", `[8] CHAT: Found ${allConfirmBtns.length} CONFIRM btn(s), clicking last: class="${green.className}"`);
+        green.click();
+        log("DETAIL", "[8] CHAT: ✅ Clicked CONFIRM. Waiting 3s for form fields to appear…");
+        await sleep(3000);
+      } else {
+        warn("DETAIL", "[8] CHAT: CONFIRM modal not found — form fields may already be visible.");
+      }
+
+      // ── [9] Fetch M3U URL from backend ──────────────────────────────────
+      log("DETAIL", "[9] CHAT: Calling prepare-order to get M3U URL…");
+      let m3uUrl = null;
+
+      try {
+        const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
+        log("DETAIL", "[9] CHAT: prepare-order response:", JSON.stringify(prepared).slice(0, 500));
+
+        // Extract M3U URL from the Lfollowers response
+        const raw = prepared?.delivered_data || prepared?.m3u_url || prepared?.url || prepared?.data || "";
+
+        if (typeof raw === 'string' && raw.includes('get.php')) {
+          const match = raw.match(/https?:\/\/[^\s'"<>]+get\.php\?[^'"<>\s]+/i);
+          if (match) m3uUrl = match[0].split(/\s/)[0];
+        } else if (typeof raw === 'string' && raw.includes('.m3u')) {
+          const match = raw.match(/https?:\/\/[^\s'"<>]+\.m3u[8]?[^\s'"<>]*/i);
+          if (match) m3uUrl = match[0].split(/\s/)[0];
+        } else if (prepared?.m3u_url) {
+          m3uUrl = prepared.m3u_url;
+        } else if (prepared?.url) {
+          m3uUrl = prepared.url;
+        }
+
+        log("DETAIL", `[9] CHAT: M3U URL extracted: "${(m3uUrl || "").slice(0, 80)}"`);
+      } catch (e) {
+        err("DETAIL", `[9] CHAT: prepare-order failed: ${e.message}`);
+      }
+
+      if (!m3uUrl) {
+        err("DETAIL", "[9] CHAT: No M3U URL found in Lfollowers response — cannot proceed.");
+        return;
+      }
+
+      // ── [10] Run the full chat delivery pipeline ─────────────────────────────
+      const chatOk = await runChatDelivery(orderId, resolvedTitle, quantity, m3uUrl);
+      if (chatOk) {
+        await bgMarkProcessed(orderId);
+        log("DETAIL", `[11] ✅ Chat delivery completed for ${orderId}.`);
+      } else {
+        warn("DETAIL", "[11] Chat delivery did not complete successfully.");
+      }
+
+      log("DETAIL", "↩ Returning to order list in 3s…");
+      await sleep(3000);
+      window.location.href = "/sellOrder/index";
+      return;
+    }
+
+    // ── DIRECT DELIVERY PATH ──────────────────────────────────────────────────
+    if (deliveryMethod === "direct") {
+      log("DETAIL", "[9] deliveryMethod=direct — preparing payload (no XLSX upload).");
+      const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
+      const ok = await runDirectDelivery(prepared.accounts || [], quantity);
+      if (ok) {
+        await bgMarkProcessed(orderId);
+        log("DETAIL", `[11] ✅ Direct delivery completed for ${orderId}.`);
+      }
+      return;
+    }
+
+    // ── FILE DELIVERY PATH (default) ───────────────────────────────────────
+
+    function findTemplateLink() {
+      const allAnchors = Array.from(document.querySelectorAll("a, button"));
+      const byText = allAnchors.find((el) => {
+        const t = el.textContent?.trim().toUpperCase() || "";
+        return t.includes("DOWNLOAD") && (
+          t.includes("TEMPLATE") ||
+          t.includes("BULK DELIVERY") ||
+          t.includes("DELIVERY FORM") ||
+          t.includes("SELL FORM")
+        );
+      });
+      if (byText) return byText;
+      return document.querySelector('a[href*=".xlsx"], a[download][href*="sell"]');
+    }
+
+    const allBtnsNow = Array.from(document.querySelectorAll("button, a"));
+    const templateLinkEl  = findTemplateLink();
+    const hasTemplateLink = !!templateLinkEl;
+    const hasStartTrading = allBtnsNow.some((b) => b.textContent?.trim().toUpperCase().includes("START TRADING"));
+    const hasPrepBtn      = allBtnsNow.some((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
+
+    if (templateLinkEl) {
+      log("DETAIL", `[6] Template link found: text="${templateLinkEl.textContent?.trim()}" href="${templateLinkEl.getAttribute("href")}"`);
+    }
+
+    log("DETAIL", `[6] Page state → hasTemplateLink:${hasTemplateLink} | hasStartTrading:${hasStartTrading} | hasPrepBtn:${hasPrepBtn}`);
+    dumpButtons("DETAIL-STATE-CHECK");
+
+    const hasWaitForConfirm = badgeText.includes("WAIT FOR CONFIRM") ||
+                              badgeText.includes("WAITING FOR CONFIRM");
+    if (hasWaitForConfirm) {
+      log("DETAIL", `[6] 🟡 Badge="${badgeText}" → WAIT FOR CONFIRMED — skipping upload, going straight to confirm delivery.`);
+      return await confirmDeliveredFlow(quantity);
+    }
+
+    if (!hasTemplateLink) {
+      if (!hasStartTrading) {
+        if (!hasPrepBtn) {
+          err("DETAIL", "[6] FILE: Neither PREPARING nor START TRADING nor template link found.");
+          dumpButtons("DETAIL-[6]-STUCK");
+          return;
+        }
+        const preparingBtn = allBtnsNow.find((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
+        log("DETAIL", `[6] FILE: Clicking PREPARING: tag=${preparingBtn.tagName} class="${preparingBtn.className}"`);
+        preparingBtn.click();
+        log("DETAIL", "[6] FILE: ✅ Clicked PREPARING. Waiting 3s…");
+        await sleep(3000);
+      } else {
+        log("DETAIL", "[6] FILE: START TRADING already visible — skipping PREPARING.");
+      }
+
+      log("DETAIL", "[7] FILE: Waiting for START TRADING button (10s)…");
+      dumpButtons("DETAIL-BEFORE-START-TRADING");
+      const startBtn = await waitForElementByText("button, a", "START TRADING", 10000);
+      if (!startBtn) {
+        err("DETAIL", "[7] FILE: START TRADING button not found after 10s.");
+        dumpButtons("DETAIL-[7]-FAILED");
+        return;
+      }
+      log("DETAIL", `[7] FILE: Clicking START TRADING: tag=${startBtn.tagName} text="${startBtn.textContent?.trim()}" class="${startBtn.className}"`);
+      startBtn.click();
+      log("DETAIL", "[7] FILE: ✅ Clicked START TRADING. Waiting 2.5s…");
+      await sleep(2500);
+
+      log("DETAIL", "[8] FILE: Waiting for CONFIRM button in modal (8s)…");
+      dumpButtons("DETAIL-AFTER-START-TRADING");
+
+      const allConfirmBtns = await (async () => {
+        const end = Date.now() + 8000;
+        while (Date.now() < end) {
+          const btns = Array.from(document.querySelectorAll("button")).filter(
+            (b) => b.textContent?.trim().toUpperCase() === "CONFIRM"
+          );
+          if (btns.length) return btns;
+          await sleep(400);
+        }
+        return [];
+      })();
+
+      if (allConfirmBtns.length) {
+        const green = allConfirmBtns[allConfirmBtns.length - 1];
+        log("DETAIL", `[8] FILE: Found ${allConfirmBtns.length} CONFIRM btn(s), clicking last: class="${green.className}"`);
+        green.click();
+        log("DETAIL", "[8] FILE: ✅ Clicked CONFIRM. Waiting 3s…");
+        await sleep(3000);
+      } else {
+        warn("DETAIL", "[8] FILE: CONFIRM modal not found — continuing anyway.");
+        dumpButtons("DETAIL-[8]-NO-MODAL");
+      }
+    } else {
+      log("DETAIL", "[6-8] Template link already on page — order is in Delivering state. Jumping to download.");
+    }
+
+    // ── [9] Download template & process ──────────────────────────────────────
+    log("DETAIL", "[9] FILE: Looking for template download link…");
+    const templateLink = findTemplateLink();
+    if (!templateLink) {
+      err("DETAIL", "[9] FILE: Template download link NOT found.");
+      log("DETAIL", "[9] FILE: All <a> elements on page:",
+        Array.from(document.querySelectorAll("a")).map((a) => `"${a.textContent?.trim()}" → ${a.getAttribute("href")}`).join(" | ")
+      );
+      return;
+    }
+    const templateUrl = templateLink.getAttribute("href");
+    log("DETAIL", `[9] FILE: Template link: text="${templateLink.textContent?.trim()}" href="${templateUrl}"`);
+    const { bytes: templateBlob, filename: templateFilename } = await downloadBlob(templateUrl);
+    log("DETAIL", `[9] FILE: Original template filename: "${templateFilename}"`);
+
+    log("DETAIL", "[10] FILE: Sending to backend…");
+    let filledBytes;
+    try {
+      filledBytes = await sendToBackend({
+        orderId,
+        title: resolvedTitle,
+        quantity,
+        templateBlob: Array.from(templateBlob),
+        templateFilename,
+      });
+      log("DETAIL", `[10] ✅ Backend success. Filled file size: ${filledBytes.length} bytes`);
+    } catch (backendErr) {
+      err("DETAIL", `[10] FILE: Backend failed: ${backendErr.message}`);
+      return;
+    }
+
+    log("DETAIL", "[11] FILE: Uploading filled file…");
+    const uploaded = await uploadAndConfirm(filledBytes, templateFilename, quantity);
+    if (uploaded) {
+      await bgMarkProcessed(orderId);
+      log("DETAIL", `[11] ✅ Order ${orderId} fully completed and marked processed.`);
+    } else {
+      warn("DETAIL", "[11] FILE: Upload/confirm step did not complete.");
     }
 
     log("DETAIL", "↩ Returning to order list in 3s to process next order…");
