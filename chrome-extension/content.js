@@ -1132,52 +1132,45 @@
 
     // ── CHAT DELIVERY PATH ────────────────────────────────────────────────────
     if (deliveryMethod === "chat") {
-      log("DETAIL", `[6] 🚀 CHAT DELIVERY path — clicking PREPARING / START TRADING / CONFIRM first, then routing to M3U pipeline`);
+      log("DETAIL", `[6] 🚀 CHAT DELIVERY path — preparing UI elements / checking trading states`);
 
       const allBtnsNow = Array.from(document.querySelectorAll("button, a"));
       const hasStartTrading = allBtnsNow.some((b) => b.textContent?.trim().toUpperCase().includes("START TRADING"));
       const hasPrepBtn      = allBtnsNow.some((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
 
-      if (!hasStartTrading) {
-        if (!hasPrepBtn) { err("DETAIL", "[6] CHAT: Neither PREPARING nor START TRADING found — cannot proceed."); dumpButtons("CHAT-[6]-STUCK"); return; }
+      if (!hasStartTrading && hasPrepBtn) {
         const preparingBtn = allBtnsNow.find((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
         log("DETAIL", `[6] CHAT: Clicking PREPARING`);
         preparingBtn.click();
         log("DETAIL", "[6] CHAT: ✅ Clicked PREPARING. Waiting 3s…");
         await sleep(3000);
+
+        log("DETAIL", "[7] CHAT: Waiting for START TRADING button (10s)…");
+        const startBtn = await waitForElementByText("button, a", "START TRADING", 10000);
+        if (startBtn) {
+          log("DETAIL", `[7] CHAT: Clicking START TRADING`);
+          startBtn.click();
+          await sleep(2500);
+        }
+      } else if (hasStartTrading) {
+        log("DETAIL", "[6] CHAT: START TRADING already visible — proceeding to click it.");
+        const startBtn = await waitForElementByText("button, a", "START TRADING", 5000);
+        if (startBtn) {
+          startBtn.click();
+          await sleep(2500);
+        }
       } else {
-        log("DETAIL", "[6] CHAT: START TRADING already visible — skipping PREPARING.");
+        // Advanced order state fallback
+        warn("DETAIL", "[6] CHAT: Neither PREPARING nor START TRADING buttons are present. Order may already be in 'Delivering' state. Proceeding straight to credentials injection.");
       }
 
-      log("DETAIL", "[7] CHAT: Waiting for START TRADING button (10s)…");
-      dumpButtons("CHAT-BEFORE-START-TRADING");
-      const startBtn = await waitForElementByText("button, a", "START TRADING", 10000);
-      if (!startBtn) { err("DETAIL", "[7] CHAT: START TRADING button not found after 10s."); dumpButtons("CHAT-[7]-FAILED"); return; }
-      log("DETAIL", `[7] CHAT: Clicking START TRADING`);
-      startBtn.click();
-      log("DETAIL", "[7] CHAT: ✅ Clicked START TRADING. Waiting 2.5s…");
-      await sleep(2500);
-
-      log("DETAIL", "[8] CHAT: Waiting for CONFIRM button in modal (8s)…");
-      dumpButtons("CHAT-AFTER-START-TRADING");
-      const allConfirmBtns = await (async () => {
-        const end = Date.now() + 8000;
-        while (Date.now() < end) {
-          const btns = Array.from(document.querySelectorAll("button")).filter((b) => b.textContent?.trim().toUpperCase() === "CONFIRM");
-          if (btns.length) return btns;
-          await sleep(400);
-        }
-        return [];
-      })();
-
+      // Check for confirm modal safely without crashing if absent
+      const allConfirmBtns = Array.from(document.querySelectorAll("button")).filter((b) => b.textContent?.trim().toUpperCase() === "CONFIRM");
       if (allConfirmBtns.length) {
         const green = allConfirmBtns[allConfirmBtns.length - 1];
-        log("DETAIL", `[8] CHAT: Found ${allConfirmBtns.length} CONFIRM btn(s), clicking last: class="${green.className}"`);
+        log("DETAIL", `[8] CHAT: Found CONFIRM modal button, clicking it.`);
         green.click();
-        log("DETAIL", "[8] CHAT: ✅ Clicked CONFIRM. Waiting 3s for form fields to appear…");
         await sleep(3000);
-      } else {
-        warn("DETAIL", "[8] CHAT: CONFIRM modal not found — form fields may already be visible.");
       }
 
       // ── [9] Fetch M3U URL from backend ──────────────────────────────────
