@@ -150,6 +150,15 @@ async function purchaseM3uSubscription(productId: string): Promise<Record<string
   // ── END DEBUG ────────────────────────────────────────────────────────────────
 
   const purchaseResult = lfResponse.data as {
+    success?: boolean;
+    order?: {
+      id?: string;
+      package_id?: string;
+      m3u_url?: string;
+      dns_link?: string;
+      url?: string;
+      delivered_data?: string;
+    };
     delivered_data?: string;
     m3u_url?: string;
     dns_link?: string;
@@ -166,27 +175,45 @@ async function purchaseM3uSubscription(productId: string): Promise<Record<string
   // Build the full result object with all URL fields resolved
   const m3uData: Record<string, unknown> = {};
 
-  // Priority 1: explicit m3u_url field
-  if (purchaseResult.m3u_url) {
+  // ── Priority 1: nested order object (Lfollowers wraps links here) ───────────
+  // Lfollowers returns: { success: true, order: { m3u_url, dns_link, ... } }
+  const orderObj = purchaseResult.order;
+  if (orderObj) {
+    if (orderObj.m3u_url) {
+      m3uData.m3u_url = orderObj.m3u_url;
+      logger.info({ m3uUrl: orderObj.m3u_url }, "M3U URL from lfResponse.order.m3u_url");
+    }
+    if (orderObj.dns_link) {
+      m3uData.dns_link = orderObj.dns_link;
+      logger.info({ dnsLink: orderObj.dns_link }, "DNS link from lfResponse.order.dns_link");
+    }
+    if (orderObj.url) {
+      m3uData.url = orderObj.url;
+      logger.info({ url: orderObj.url }, "URL from lfResponse.order.url");
+    }
+    if (orderObj.delivered_data) {
+      m3uData.delivered_data = orderObj.delivered_data;
+      logger.info({ deliveredData: orderObj.delivered_data }, "delivered_data from lfResponse.order.delivered_data");
+    }
+  }
+
+  // ── Priority 2: explicit fields at root level ───────────────────────────────
+  if (!m3uData.m3u_url && purchaseResult.m3u_url) {
     m3uData.m3u_url = purchaseResult.m3u_url;
-    logger.info({ m3uUrl: purchaseResult.m3u_url }, "M3U URL from explicit field");
+    logger.info({ m3uUrl: purchaseResult.m3u_url }, "M3U URL from explicit root field");
   }
-
-  // Priority 2: explicit dns_link field
-  if (purchaseResult.dns_link) {
+  if (!m3uData.dns_link && purchaseResult.dns_link) {
     m3uData.dns_link = purchaseResult.dns_link;
-    logger.info({ dnsLink: purchaseResult.dns_link }, "DNS link from explicit field");
+    logger.info({ dnsLink: purchaseResult.dns_link }, "DNS link from explicit root field");
   }
-
-  // Priority 3: explicit url field
-  if (purchaseResult.url) {
+  if (!m3uData.url && purchaseResult.url) {
     m3uData.url = purchaseResult.url;
-    logger.info({ url: purchaseResult.url }, "URL from explicit field");
+    logger.info({ url: purchaseResult.url }, "URL from explicit root field");
   }
 
-  // Priority 4: extract from delivered_data (common for many Lfollowers products)
-  const delivered = purchaseResult.delivered_data ?? "";
-  if (delivered) {
+  // ── Priority 3: extract from delivered_data at root level ───────────────────
+  const delivered = (m3uData.delivered_data as string | undefined) ?? purchaseResult.delivered_data ?? "";
+  if (delivered && !m3uData.m3u_url) {
     m3uData.delivered_data = delivered;
 
     // Try to find an M3U URL pattern in the delivered data
@@ -220,7 +247,7 @@ async function purchaseM3uSubscription(productId: string): Promise<Record<string
     }
   }
 
-  // Fallback: if delivered_data itself looks like a URL
+  // ── Priority 4: fallback — if delivered_data itself looks like a URL ─────────
   if (delivered.startsWith("http") && (delivered.includes("get.php") || delivered.includes(".m3u"))) {
     if (!m3uData.m3u_url) {
       m3uData.m3u_url = delivered.split(/\s/)[0];
