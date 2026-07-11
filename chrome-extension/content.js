@@ -5,7 +5,7 @@
   const isListPage   = /sellOrder\/index/.test(href);
   const isDetailPage = !isListPage && /sellOrder(\?|$)/.test(href);
 
-  // ── Listen for upload requests captured by injected.js ────────────────────
+  // ── Listen for upload requests captured by injected.js ──────────────────────
   window.addEventListener("message", (e) => {
     if (e.data?.source !== "__z2u_injected__") return;
     if (e.data.type === "UPLOAD_REQUEST_CAPTURED") {
@@ -17,7 +17,7 @@
     }
   });
 
-  // ── Logging helpers ────────────────────────────────────────────────────────
+  // ── Logging helpers ──────────────────────────────────────────────────────
 
   function log(step, msg, ...extra) {
     const ts = new Date().toISOString().slice(11, 23);
@@ -34,7 +34,7 @@
     console.error(`[Z2U] ${step} ❌ ${msg}`, ...extra);
   }
 
-  // ── Analytics helpers ──────────────────────────────────────────────────────
+  // ── Analytics helpers ──────────────────────────────────────────────────
 
   function extractOrderAmount() {
     const allEls = Array.from(document.querySelectorAll("*"));
@@ -85,7 +85,7 @@
     log(label, `Buttons on page → [${btns}]`);
   }
 
-  // ── Shared utilities ───────────────────────────────────────────────────────
+  // ── Shared utilities ─────────────────────────────────────────────────────
 
   function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
@@ -123,7 +123,7 @@
     return true;
   }
 
-  // ── Persistent processed set ─────────────────────────────────────────────
+  // ── Persistent processed set ─────────────────────────────────────────
 
   const sessionDone = new Set();
 
@@ -155,7 +155,7 @@
     });
   }
 
-  // ── Template download ──────────────────────────────────────────────────────
+  // ── Template download ────────────────────────────────────────────────
 
   async function downloadBlob(url) {
     log("DL", `Downloading template from: ${url}`);
@@ -173,7 +173,7 @@
     return { bytes, filename };
   }
 
-  // ── Backend call ───────────────────────────────────────────────────────────
+  // ── Backend call ─────────────────────────────────────────────────────
 
   async function sendToBackend({ orderId, title, quantity, templateBlob, templateFilename }) {
     log("BACKEND", `Sending to backend → orderId=${orderId} title="${title.slice(0, 40)}..." qty=${quantity} blobSize=${templateBlob.length} filename="${templateFilename}"`);
@@ -191,7 +191,7 @@
     return new Uint8Array(result.result.filledFile);
   }
 
-  // ── Upload filled file ─────────────────────────────────────────────────────
+  // ── Upload filled file ─────────────────────────────────────────────
 
   function findXlsxInput() {
     const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
@@ -205,7 +205,7 @@
     return null;
   }
 
-  // ── Confirm Delivered flow ────────────────────────────────────────────────
+  // ── Confirm Delivered flow ────────────────────────────────────────
 
   async function confirmDeliveredFlow(quantity) {
     function hasViewDeliveryBtn() {
@@ -349,7 +349,7 @@
     return true;
   }
 
-  // ── Direct API upload ──────────────────────────────────────────────────────
+  // ── Direct API upload ───────────────────────────────────────────────
 
   const Z2U_FILE_FIELDS = ["upfile", "file", "upload", "excel", "formFile"];
 
@@ -832,7 +832,6 @@
     if (!formFilled) warn("CHAT-DELIVERY", `Form fill was incomplete — continuing anyway`);
     await sleep(800);
 
-    // Pass the extra Samsung/LG URL through to the formatter
     const message = formatChatMessage(parsed, extraSamsungLgUrl);
     if (!message) {
       err("CHAT-DELIVERY", "Failed to format chat message");
@@ -1180,40 +1179,49 @@
 
       try {
         const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
-        log("DETAIL", "[9] CHAT: prepare-order response:", JSON.stringify(prepared).slice(0, 500));
+        log("DETAIL", "[9] CHAT: prepare-order response preview:", JSON.stringify(prepared).slice(0, 150));
 
         // Handle explicit API error fields
         if (prepared?.error) {
           throw new Error(`Lfollowers API Error: ${prepared.error}`);
         }
 
-        const order = prepared?.order;
-        if (order) {
-          log("DETAIL", `[9] CHAT: Identified provider "${order.provider || 'unknown'}".`);
+        // Broaden the search path: sometimes APIs wrap it in data.order or just data
+        const order = prepared?.order || prepared?.data?.order || prepared?.data || prepared;
 
-          // Fallback chain for primary M3U link extraction: m3u_url → dns_link → url
-          m3uUrl = order.m3u_url || order.dns_link || order.url;
+        if (order && typeof order === 'object') {
+          m3uUrl = order.m3u_url || order.dns_link || order.url || prepared.m3u_url || prepared.dns_link;
 
-          // If megaott, extract the secondary mandatory link for Samsung/LG
-          if (order.provider === "megaott" && order.dns_link_for_samsung_lg) {
+          if (order.provider === "megaott" || order.dns_link_for_samsung_lg) {
             extraSamsungLgUrl = order.dns_link_for_samsung_lg;
-            log("DETAIL", `[9] CHAT: Captured extra Samsung/LG link for MegaOTT: "${extraSamsungLgUrl.slice(0, 80)}"`);
-          }
-        } else {
-          // Flattened root property fallbacks for legacy / non-nested responses
-          const raw = prepared?.delivered_data || prepared?.data || "";
-          if (typeof raw === 'string' && raw.startsWith('http')) {
-            m3uUrl = raw.trim().split(/\s/)[0];
+            if (extraSamsungLgUrl) {
+              log("DETAIL", `[9] CHAT: Captured extra Samsung/LG link: "${extraSamsungLgUrl.slice(0, 80)}"`);
+            }
           }
         }
 
-        log("DETAIL", `[9] CHAT: M3U URL extracted: "${(m3uUrl || "").slice(0, 80)}"`);
+        // Absolute fallback if it's returning a raw text string somewhere
+        if (!m3uUrl) {
+          const raw = prepared?.delivered_data || prepared?.data || "";
+          if (typeof raw === 'string' && raw.includes('http')) {
+            // Extract the first http link found in the string
+            const match = raw.match(/(https?:\/\/[^\s]+)/);
+            if (match) m3uUrl = match[1];
+          }
+        }
+
+        if (m3uUrl) {
+          log("DETAIL", `[9] CHAT: M3U URL extracted: "${m3uUrl.slice(0, 80)}"`);
+        } else {
+          // PANIC LOG: Print the entire object so the developer can see the exact structure
+          err("DETAIL", `[9] CHAT: Could not find URL keys in payload. Full JSON dump:`, JSON.stringify(prepared));
+        }
       } catch (e) {
         err("DETAIL", `[9] CHAT: prepare-order failed: ${e.message}`);
       }
 
       if (!m3uUrl) {
-        err("DETAIL", "[9] CHAT: No M3U URL found in Lfollowers response — cannot proceed.");
+        err("DETAIL", "[9] CHAT: No M3U URL found in Lfollowers response — cannot proceed. Check the JSON dump above.");
         return;
       }
 
