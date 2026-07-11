@@ -134,6 +134,21 @@ async function purchaseM3uSubscription(productId: string): Promise<Record<string
     quantity: 1,
   });
 
+  // ── DEBUG: Log the raw unparsed response immediately ──────────────────────────
+  console.log("================================================================================");
+  console.log("[purchaseM3uSubscription] RAW Lfollowers API response:");
+  console.log("lfResponse.data:", lfResponse.data);
+  console.log("lfResponse.data type:", typeof lfResponse.data);
+  console.log("lfResponse.data constructor:", lfResponse.data?.constructor?.name);
+  if (Array.isArray(lfResponse.data)) {
+    console.log("lfResponse.data is an ARRAY with", lfResponse.data.length, "items");
+    lfResponse.data.forEach((item, i) => console.log(`  [${i}]:`, item));
+  } else if (typeof lfResponse.data === "object" && lfResponse.data !== null) {
+    console.log("lfResponse.data keys:", Object.keys(lfResponse.data));
+  }
+  console.log("================================================================================");
+  // ── END DEBUG ────────────────────────────────────────────────────────────────
+
   const purchaseResult = lfResponse.data as {
     delivered_data?: string;
     m3u_url?: string;
@@ -212,6 +227,11 @@ async function purchaseM3uSubscription(productId: string): Promise<Record<string
       logger.info({ deliveredData: m3uData.m3u_url }, "Using raw delivered_data as M3U URL");
     }
   }
+
+  // ── DEBUG: Log what we extracted ─────────────────────────────────────────────
+  console.log("[purchaseM3uSubscription] Extracted m3uData:", m3uData);
+  console.log("================================================================================");
+  // ── END DEBUG ────────────────────────────────────────────────────────────────
 
   return m3uData;
 }
