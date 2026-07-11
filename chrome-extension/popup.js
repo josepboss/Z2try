@@ -229,10 +229,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (resp?.backends?.length) {
     BACKENDS = resp.backends;
   } else {
-    // Fallback defaults
+    // Fallback defaults — updated to port 3006
     BACKENDS = [
-      { name: "Backend A", url: "http://YOUR_MAC_IP:3000" },
-      { name: "Backend B", url: "http://YOUR_MAC_IP:3005" },
+      { name: "Backend A", url: "http://YOUR_VPS_IP:3006" },
+      { name: "Backend B", url: "http://YOUR_VPS_IP:3006" },
     ];
   }
 
