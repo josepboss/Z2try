@@ -31,7 +31,23 @@ interface ParsedAccount {
   raw: string;
 }
 
-// ── Order cache ─────────────────────────────────────────────────────────────
+// ── In-memory promise cache for prepare-order ────────────────────────────────
+// Prevents duplicate Lfollowers API calls for the same orderId
+const prepareOrderCache = new Map<string, Promise<unknown>>();
+
+function getCachedPrepareOrder(orderId: string): Promise<unknown> | undefined {
+  return prepareOrderCache.get(orderId) as Promise<unknown> | undefined;
+}
+
+function setCachedPrepareOrder(orderId: string, promise: Promise<unknown>): void {
+  prepareOrderCache.set(orderId, promise as Promise<unknown>);
+}
+
+function evictCachedPrepareOrder(orderId: string): void {
+  prepareOrderCache.delete(orderId);
+}
+
+// ── Order file cache ─────────────────────────────────────────────────────────
 const CACHE_DIR = path.resolve(__dirname, "../../order-cache");
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
 
@@ -363,54 +379,78 @@ router.post("/prepare-order", async (req, res) => {
     const deliveryMethod = mapping.deliveryMethod || "file";
     logger.info({ title, productId: mapping.serviceId, deliveryMethod }, "prepare-order: routing by delivery method");
 
-    // ── CHAT / M3U delivery path ──────────────────────────────────────────────
-    if (deliveryMethod === "chat") {
-      logger.info({ productId: mapping.serviceId }, "prepare-order: calling purchaseM3uSubscription() for chat delivery");
+    // ── In-memory promise cache — deduplicate concurrent requests for same orderId ──
+    if (orderId) {
+      const cached = getCachedPrepareOrder(orderId);
+      if (cached) {
+        logger.info({ orderId }, "prepare-order: duplicate request detected — awaiting cached promise");
+        const result = await cached;
+        logger.info({ orderId }, "prepare-order: returning cached result");
+        res.json(result);
+        return;
+      }
+    }
 
-      const m3uData = await purchaseM3uSubscription(mapping.serviceId);
+    // Build the processing promise and cache it immediately (before it resolves)
+    const processingPromise = (async () => {
+      // ── CHAT / M3U delivery path ──────────────────────────────────────────────
+      if (deliveryMethod === "chat") {
+        logger.info({ productId: mapping.serviceId }, "prepare-order: calling purchaseM3uSubscription() for chat delivery");
 
-      logger.info({ m3uData }, "prepare-order: M3U purchase complete");
+        const m3uData = await purchaseM3uSubscription(mapping.serviceId);
 
-      // Return the M3U data at the top level AND inside an `order` key
-      // to match client expectations for both:
-      //   prepared.m3u_url        ← flat access
-      //   prepared.order.m3u_url  ← nested access
-      res.json({
+        logger.info({ m3uData }, "prepare-order: M3U purchase complete");
+
+        return {
+          ok: true,
+          orderId: orderId || "",
+          title,
+          productId: mapping.serviceId,
+          deliveryMethod: "chat",
+          order: {
+            m3u_url:    m3uData.m3u_url    || null,
+            dns_link:   m3uData.dns_link   || null,
+            url:        m3uData.url        || null,
+            delivered_data: m3uData.delivered_data || null,
+          },
+          // Flat keys for direct access (matches prepared.m3u_url)
+          m3u_url:    m3uData.m3u_url    || null,
+          dns_link:   m3uData.dns_link   || null,
+          dns_link_for_samsung_lg: m3uData.dns_link || null, // alias for megaott compatibility
+        };
+      }
+
+      // ── FILE / DIRECT delivery path ────────────────────────────────────────────
+      logger.info({ productId: mapping.serviceId, quantity: qty }, "prepare-order: calling purchaseAccounts() for file/direct delivery");
+
+      const accounts = await purchaseAccounts(mapping.serviceId, qty, mapping.separator);
+
+      return {
         ok: true,
         orderId: orderId || "",
         title,
         productId: mapping.serviceId,
-        deliveryMethod: "chat",
-        order: {
-          m3u_url:    m3uData.m3u_url    || null,
-          dns_link:   m3uData.dns_link   || null,
-          url:        m3uData.url        || null,
-          delivered_data: m3uData.delivered_data || null,
-        },
-        // Flat keys for direct access (matches prepared.m3u_url)
-        m3u_url:    m3uData.m3u_url    || null,
-        dns_link:   m3uData.dns_link   || null,
-        dns_link_for_samsung_lg: m3uData.dns_link || null, // alias for megaott compatibility
-      });
-      return;
+        deliveryMethod,
+        columnMap: mapping.columnMap || { email: "A", password: "B" },
+        accounts,
+        formattedCredentials: formatCredentials(accounts),
+      };
+    })();
+
+    // Cache the promise immediately so concurrent requests for the same orderId await it
+    if (orderId) {
+      setCachedPrepareOrder(orderId, processingPromise as Promise<unknown>);
     }
 
-    // ── FILE / DIRECT delivery path ────────────────────────────────────────────
-    logger.info({ productId: mapping.serviceId, quantity: qty }, "prepare-order: calling purchaseAccounts() for file/direct delivery");
-
-    const accounts = await purchaseAccounts(mapping.serviceId, qty, mapping.separator);
-
-    res.json({
-      ok: true,
-      orderId: orderId || "",
-      title,
-      productId: mapping.serviceId,
-      deliveryMethod,
-      columnMap: mapping.columnMap || { email: "A", password: "B" },
-      accounts,
-      formattedCredentials: formatCredentials(accounts),
-    });
+    // Await and send the result
+    const result = await processingPromise;
+    res.json(result);
   } catch (err) {
+    // Evict from cache on failure so the orderId can be safely retried
+    if (orderId) {
+      evictCachedPrepareOrder(orderId);
+      logger.info({ orderId }, "prepare-order: evicted from cache after error");
+    }
     logger.error({ err }, "prepare-order failed");
     res.status(500).json({ error: "Internal server error" });
   }
