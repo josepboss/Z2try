@@ -117,9 +117,13 @@ async function purchaseAccounts(productId: string, qty: number, separator?: stri
 
 /**
  * Purchase an M3U subscription from Lfollowers.
- * Returns the raw M3U URL from the delivered_data field.
+ * Returns the raw API response from Lfollowers, which may contain:
+ *   - m3u_url (primary M3U URL)
+ *   - dns_link (DNS/reseller link)
+ *   - url (alternative URL field)
+ *   - delivered_data (raw text, may contain URLs)
  */
-async function purchaseM3uSubscription(productId: string): Promise<string> {
+async function purchaseM3uSubscription(productId: string): Promise<Record<string, unknown>> {
   const key = getApiKey();
   logger.info({ productId }, "Calling Lfollowers for M3U subscription");
 
@@ -133,6 +137,7 @@ async function purchaseM3uSubscription(productId: string): Promise<string> {
   const purchaseResult = lfResponse.data as {
     delivered_data?: string;
     m3u_url?: string;
+    dns_link?: string;
     url?: string;
     error?: string;
   };
@@ -143,48 +148,72 @@ async function purchaseM3uSubscription(productId: string): Promise<string> {
     throw new Error(`Lfollowers error: ${purchaseResult.error}`);
   }
 
+  // Build the full result object with all URL fields resolved
+  const m3uData: Record<string, unknown> = {};
+
   // Priority 1: explicit m3u_url field
   if (purchaseResult.m3u_url) {
+    m3uData.m3u_url = purchaseResult.m3u_url;
     logger.info({ m3uUrl: purchaseResult.m3u_url }, "M3U URL from explicit field");
-    return purchaseResult.m3u_url;
   }
 
-  // Priority 2: explicit url field
+  // Priority 2: explicit dns_link field
+  if (purchaseResult.dns_link) {
+    m3uData.dns_link = purchaseResult.dns_link;
+    logger.info({ dnsLink: purchaseResult.dns_link }, "DNS link from explicit field");
+  }
+
+  // Priority 3: explicit url field
   if (purchaseResult.url) {
-    logger.info({ url: purchaseResult.url }, "M3U URL from url field");
-    return purchaseResult.url;
+    m3uData.url = purchaseResult.url;
+    logger.info({ url: purchaseResult.url }, "URL from explicit field");
   }
 
-  // Priority 3: extract from delivered_data (common for many Lfollowers products)
+  // Priority 4: extract from delivered_data (common for many Lfollowers products)
   const delivered = purchaseResult.delivered_data ?? "";
+  if (delivered) {
+    m3uData.delivered_data = delivered;
 
-  // Try to find an M3U URL pattern in the delivered data
-  const m3uPatterns = [
-    /https?:\/\/[^\s'"<>]+get\.php\?[^'"<>\s]+/i,
-    /https?:\/\/[^\s'"<>]+\.m3u[8]?[^\s'"<>]*/i,
-    /https?:\/\/[^\s'"<>]+\/get\.php\?[^'"<>\s]+username=[^\s'"<>]+/gi,
-  ];
+    // Try to find an M3U URL pattern in the delivered data
+    const m3uPatterns = [
+      /https?:\/\/[^\s'"<>]+get\.php\?[^\s'"<>\s]+/i,
+      /https?:\/\/[^\s'"<>]+\.m3u[8]?[^\s'"<>]*/i,
+      /https?:\/\/[^\s'"<>]+\/get\.php\?[^\s'"<>\s]+username=[^\s'"<>]+/gi,
+    ];
 
-  for (const pattern of m3uPatterns) {
-    const matches = delivered.match(pattern);
-    if (matches && matches.length > 0) {
-      const candidate = matches[0].split(/\s/)[0];
-      if (candidate.includes("get.php") || candidate.includes(".m3u")) {
-        logger.info({ m3uUrl: candidate }, "M3U URL extracted from delivered_data");
-        return candidate;
+    for (const pattern of m3uPatterns) {
+      const matches = delivered.match(pattern);
+      if (matches && matches.length > 0) {
+        const candidate = matches[0].split(/\s/)[0];
+        if (candidate.includes("get.php") || candidate.includes(".m3u")) {
+          if (!m3uData.m3u_url) {
+            m3uData.m3u_url = candidate;
+            logger.info({ m3uUrl: candidate }, "M3U URL extracted from delivered_data");
+          }
+          break;
+        }
+      }
+    }
+
+    // Try to extract dns_link from delivered_data if not already set
+    if (!m3uData.dns_link) {
+      const dnsMatch = delivered.match(/(https?:\/\/[^\s'"<>]+(?:dns|dns_link|link)[^\s'"<>]*)/i);
+      if (dnsMatch) {
+        m3uData.dns_link = dnsMatch[1].split(/\s/)[0];
+        logger.info({ dnsLink: m3uData.dns_link }, "DNS link extracted from delivered_data");
       }
     }
   }
 
-  // Fallback: return the raw delivered_data if it looks like a URL
+  // Fallback: if delivered_data itself looks like a URL
   if (delivered.startsWith("http") && (delivered.includes("get.php") || delivered.includes(".m3u"))) {
-    logger.info({ deliveredData: delivered }, "Using raw delivered_data as M3U URL");
-    return delivered.split(/\s/)[0];
+    if (!m3uData.m3u_url) {
+      m3uData.m3u_url = delivered.split(/\s/)[0];
+      logger.info({ deliveredData: m3uData.m3u_url }, "Using raw delivered_data as M3U URL");
+    }
   }
 
-  throw new Error(
-    `No M3U URL found in Lfollowers response. delivered_data="${delivered.slice(0, 200)}"`,
-  );
+  return m3uData;
 }
 
 function escapeXml(s: string): string {
@@ -284,13 +313,52 @@ router.post("/prepare-order", async (req, res) => {
       return;
     }
 
+    const deliveryMethod = mapping.deliveryMethod || "file";
+    logger.info({ title, productId: mapping.serviceId, deliveryMethod }, "prepare-order: routing by delivery method");
+
+    // ── CHAT / M3U delivery path ──────────────────────────────────────────────
+    if (deliveryMethod === "chat") {
+      logger.info({ productId: mapping.serviceId }, "prepare-order: calling purchaseM3uSubscription() for chat delivery");
+
+      const m3uData = await purchaseM3uSubscription(mapping.serviceId);
+
+      logger.info({ m3uData }, "prepare-order: M3U purchase complete");
+
+      // Return the M3U data at the top level AND inside an `order` key
+      // to match client expectations for both:
+      //   prepared.m3u_url        ← flat access
+      //   prepared.order.m3u_url  ← nested access
+      res.json({
+        ok: true,
+        orderId: orderId || "",
+        title,
+        productId: mapping.serviceId,
+        deliveryMethod: "chat",
+        order: {
+          m3u_url:    m3uData.m3u_url    || null,
+          dns_link:   m3uData.dns_link   || null,
+          url:        m3uData.url        || null,
+          delivered_data: m3uData.delivered_data || null,
+        },
+        // Flat keys for direct access (matches prepared.m3u_url)
+        m3u_url:    m3uData.m3u_url    || null,
+        dns_link:   m3uData.dns_link   || null,
+        dns_link_for_samsung_lg: m3uData.dns_link || null, // alias for megaott compatibility
+      });
+      return;
+    }
+
+    // ── FILE / DIRECT delivery path ────────────────────────────────────────────
+    logger.info({ productId: mapping.serviceId, quantity: qty }, "prepare-order: calling purchaseAccounts() for file/direct delivery");
+
     const accounts = await purchaseAccounts(mapping.serviceId, qty, mapping.separator);
+
     res.json({
       ok: true,
       orderId: orderId || "",
       title,
       productId: mapping.serviceId,
-      deliveryMethod: mapping.deliveryMethod || "file",
+      deliveryMethod,
       columnMap: mapping.columnMap || { email: "A", password: "B" },
       accounts,
       formattedCredentials: formatCredentials(accounts),
