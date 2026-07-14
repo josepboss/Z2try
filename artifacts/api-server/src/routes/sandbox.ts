@@ -15,7 +15,7 @@ interface ParsedAccount {
 // ── XML escaping ──────────────────────────────────────────────────────────────
 function escapeXml(s: string): string {
   return s
-    .replace(/&/g, "&")
+    .replace(/&/g, "&amp;")
     .replace(/</g, "<")
     .replace(/>/g, ">")
     .replace(/"/g, "&quot;")
