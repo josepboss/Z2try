@@ -135,20 +135,6 @@
     });
   }
 
-  function bgIsPreparedOnly(orderId) {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: "IS_PREPARED_ONLY", orderId }, (r) =>
-        resolve(r?.prepared === true)
-      );
-    });
-  }
-
-  function bgMarkPreparedOnly(orderId) {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: "MARK_PREPARED_ONLY", orderId }, () => resolve());
-    });
-  }
-
   function bgMarkProcessed(orderId) {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: "MARK_PROCESSED", orderId }, resolve);
@@ -566,45 +552,66 @@
   //  CHAT DELIVERY — M3U Credential Extraction & Form Auto-Fill
   // ══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * Parse an M3U URL and extract username, password, and base domain.
+   *
+   * Example URL: http://line.dndnscloud.ru/get.php?username=457e964314&password=4973877680&type=m3u_plus&output=ts
+   *   → username: "457e964314"
+   *   → password: "4973877680"
+   *   → baseDomain: "http://line.dndnscloud.ru"
+   *
+   * @param {string} m3uUrl - Full M3U URL with query parameters
+   * @returns {{ username: string, password: string, baseDomain: string } | null}
+   */
   function parseM3uUrl(m3uUrl) {
-    if (!m3uUrl || typeof m3uUrl !== 'string') return null;
+    if (!m3uUrl || typeof m3uUrl !== 'string') {
+      log("CHAT-DELIVERY", `parseM3uUrl: invalid input`, m3uUrl);
+      return null;
+    }
     const trimmed = m3uUrl.trim();
     if (!trimmed) return null;
+
     try {
       const url = new URL(trimmed);
       const username = url.searchParams.get('username') || '';
       const password = url.searchParams.get('password') || '';
+
       if (!username || !password) {
-        log("CHAT-DELIVERY", `parseM3uUrl: missing username or password in "${trimmed.slice(0, 80)}"`);
+        log("CHAT-DELIVERY", `parseM3uUrl: missing username or password in URL params`);
         return null;
       }
+
+      // Extract base domain: protocol + host only (no path, no query string)
       const baseDomain = `${url.protocol}//${url.host}`;
-      log("CHAT-DELIVERY", `parseM3uUrl: ✅ username="${username}" domain="${baseDomain}"`);
-      return { username, password, baseDomain, rawUrl: trimmed };
+
+      log("CHAT-DELIVERY", `parseM3uUrl: ✅ username="${username}" password="${password.slice(0, 4)}..." domain="${baseDomain}"`);
+      return {
+        username,
+        password,
+        baseDomain,
+        rawUrl: trimmed,
+      };
     } catch (e) {
-      log("CHAT-DELIVERY", `parseM3uUrl: failed to parse "${trimmed.slice(0, 80)}" — ${e.message}`);
+      log("CHAT-DELIVERY", `parseM3uUrl: failed to parse URL "${trimmed.slice(0, 80)}" — ${e.message}`);
       return null;
     }
   }
 
   function getAlternativeDomains(baseDomain) {
     const config = {
-      "http://skyline-mm.com": ["http://example1.com", "http://example2.com"],
-      "http://line.trxdnscloud.ru": ["http://vpn.trxdnscloud.ru", "http://tv.trexiptv.com"],
+      "http://line.dndnscloud.ru": ["http://vpn.trxdnscloud.ru", "http://tv.trexiptv.com"],
     };
     const normalized = (baseDomain || "").trim().toLowerCase();
     return config[normalized] || config[baseDomain?.trim()] || [];
   }
 
   /**
-   * Format the chat message with credentials, optional alternative domains,
-   * and a secondary Samsung/LG link for megaott.
+   * Format the chat message with credentials, optional alternative domains.
    *
    * @param {{ username: string, password: string, baseDomain: string }} parsed
-   * @param {string | null} extraSamsungLgUrl
    * @returns {string}
    */
-  function formatChatMessage(parsed, extraSamsungLgUrl = null) {
+  function formatChatMessage(parsed) {
     if (!parsed || !parsed.username || !parsed.password || !parsed.baseDomain) {
       log("CHAT-DELIVERY", "formatChatMessage: invalid parsed input");
       return '';
@@ -629,128 +636,181 @@
       }
     }
 
-    // Append the Samsung/LG-specific link for megaott if present
-    if (extraSamsungLgUrl) {
-      lines.push('');
-      lines.push('Samsung / LG Link');
-      lines.push(`: ${extraSamsungLgUrl}`);
-      log("CHAT-DELIVERY", `formatChatMessage: ✅ Appended Samsung/LG link: "${extraSamsungLgUrl.slice(0, 80)}"`);
-    }
-
     const message = lines.join('\n');
-    log("CHAT-DELIVERY", `formatChatMessage: ✅ ${altDomains.length} alt domains + samsungLg=${!!extraSamsungLgUrl} — ${lines.length} lines`);
+    log("CHAT-DELIVERY", `formatChatMessage: ✅ ${altDomains.length} alt domains — ${lines.length} lines`);
     return message;
   }
 
+  /**
+   * Inject a value into an input element and dispatch proper events for React.
+   * Returns true if the value was successfully injected.
+   *
+   * @param {HTMLInputElement} input
+   * @param {string} value
+   * @returns {boolean}
+   */
   function safeInjectValue(input, value) {
     if (!input) return false;
+
+    // Set the value using native setter
     const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
     if (nativeSetter) nativeSetter.call(input, value); else input.value = value;
+
+    // Try React 17+ __reactProps approach
     const reactPropsKey = Object.keys(input).find((k) => k.startsWith("__reactProps") || k.startsWith("__reactInternals"));
     if (reactPropsKey) {
       const props = input[reactPropsKey];
       const onChangeFn = props?.onChange;
       if (typeof onChangeFn === "function") {
-        onChangeFn({
-          target: input, currentTarget: input, type: "input", bubbles: true,
+        const syntheticEvent = {
+          target: input,
+          currentTarget: input,
+          type: "input",
+          bubbles: true,
           nativeEvent: { target: input, data: value },
-          preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
-        });
+          preventDefault: () => {},
+          stopPropagation: () => {},
+          persist: () => {},
+        };
+        onChangeFn(syntheticEvent);
         log("CHAT-DELIVERY", `[inject] ✅ React onChange via ${reactPropsKey}`);
       }
     }
+
+    // Try React 16 __reactFiber approach
     const fiberKey = Object.keys(input).find((k) => k.startsWith("__reactFiber"));
     if (fiberKey) {
       const onChange = input[fiberKey]?.memoizedProps?.onChange;
       if (typeof onChange === "function") {
-        onChange({
-          target: input, currentTarget: input, type: "input", bubbles: true,
-          nativeEvent: { target: input }, preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
-        });
+        const syntheticEvent = {
+          target: input,
+          currentTarget: input,
+          type: "input",
+          bubbles: true,
+          nativeEvent: { target: input },
+          preventDefault: () => {},
+          stopPropagation: () => {},
+          persist: () => {},
+        };
+        onChange(syntheticEvent);
         log("CHAT-DELIVERY", `[inject] ✅ React onChange via __reactFiber`);
       }
     }
-    input.dispatchEvent(new Event("input",  { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    // Dispatch standard DOM events
+    input.dispatchEvent(new Event("input",  { bubbles: true, cancelable: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+
     const landed = input.value;
-    log("CHAT-DELIVERY", `[inject] field="${input.name}" → "${landed.slice(0, 40)}" (${landed.length} chars)`);
+    log("CHAT-DELIVERY", `[inject] field="${input.name || input.id}" → "${landed.slice(0, 40)}" (${landed.length} chars)`);
     return landed.length > 0;
   }
 
-  function fillDeliveryForm(parsed) {
-    if (!parsed) return false;
-    const results = [];
-    const usernameField = document.querySelector('input[name="delivery[98]"].form-control.required-fields');
+  /**
+   * Fill the Z2U order page form with M3U credentials.
+   * Targets:
+   *   - input[name="delivery[98]"]  → Login Account (username)
+   *   - input[name="delivery[99]"]  → Login Password (password)
+   *   - input[name="delivery[113]"] → Additional information (domain)
+   *
+   * @param {{ username: string, password: string, baseDomain: string }} parsed
+   * @returns {{ usernameFilled: boolean, passwordFilled: boolean, domainFilled: boolean }}
+   */
+  function fillOrderPageForm(parsed) {
+    if (!parsed) return { usernameFilled: false, passwordFilled: false, domainFilled: false };
+
+    const results = { usernameFilled: false, passwordFilled: false, domainFilled: false };
+
+    // Login Account (username)
+    const usernameField = document.querySelector('input[name="delivery[98]"]');
     if (usernameField) {
-      results.push(safeInjectValue(usernameField, parsed.username));
+      results.usernameFilled = safeInjectValue(usernameField, parsed.username);
       log("CHAT-DELIVERY", `✅ Filled delivery[98] (Login Account) with "${parsed.username}"`);
     } else {
       warn("CHAT-DELIVERY", `❌ delivery[98] field not found on page`);
-      results.push(false);
     }
-    const passwordField = document.querySelector('input[name="delivery[99]"].form-control.required-fields');
+
+    // Login Password (password)
+    const passwordField = document.querySelector('input[name="delivery[99]"]');
     if (passwordField) {
-      results.push(safeInjectValue(passwordField, parsed.password));
+      results.passwordFilled = safeInjectValue(passwordField, parsed.password);
       log("CHAT-DELIVERY", `✅ Filled delivery[99] (Login Password) with "${parsed.password.slice(0, 4)}..."`);
     } else {
       warn("CHAT-DELIVERY", `❌ delivery[99] field not found on page`);
-      results.push(false);
     }
-    const domainField = document.querySelector('input[name="delivery[113]"].form-control');
+
+    // Additional information (domain)
+    const domainField = document.querySelector('input[name="delivery[113]"]');
     if (domainField) {
-      results.push(safeInjectValue(domainField, parsed.baseDomain));
-      log("CHAT-DELIVERY", `✅ Filled delivery[113] (Domain) with "${parsed.baseDomain}"`);
+      results.domainFilled = safeInjectValue(domainField, parsed.baseDomain);
+      log("CHAT-DELIVERY", `✅ Filled delivery[113] (Additional info) with "${parsed.baseDomain}"`);
     } else {
       warn("CHAT-DELIVERY", `❌ delivery[113] field not found on page`);
-      results.push(false);
     }
-    const allOk = results.every(Boolean);
-    log("CHAT-DELIVERY", `fillDeliveryForm: ${allOk ? '✅ ALL fields filled' : `⚠️  ${results.filter(Boolean).length}/3 filled`}`);
-    return allOk;
+
+    const allOk = results.usernameFilled && results.passwordFilled && results.domainFilled;
+    log("CHAT-DELIVERY", `fillOrderPageForm: ${allOk ? '✅ ALL fields filled' : `⚠️  ${Object.values(results).filter(Boolean).length}/3 filled`}`);
+
+    return results;
   }
 
-  function openChatWindow() {
-    const chatLink = document.querySelector('div.SellerChatAndOtherProduct a.talkSeller');
-    if (!chatLink) {
-      warn("CHAT-DELIVERY", `❌ a.talkSeller not found inside div.SellerChatAndOtherProduct`);
-      return null;
-    }
-    const href = chatLink.getAttribute('href') || '';
-    if (!href) {
-      warn("CHAT-DELIVERY", `❌ a.talkSeller has no href`);
-      return null;
-    }
-    log("CHAT-DELIVERY", `✅ Found chat link: ${href}`);
-    chatLink.click();
-    return href;
-  }
-
-  async function sendChatMessage(message, orderId) {
-    if (!message) return false;
-    try {
-      const resp = await fetch("http://localhost:5000/chat-reply", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, orderId }),
-      });
-      if (resp.ok) {
-        const json = await resp.json().catch(() => ({}));
-        if (json.ok) {
-          log("CHAT-DELIVERY", `✅ Bridge chat reply succeeded`);
-          return true;
-        }
-        warn("CHAT-DELIVERY", `Bridge rejected: ${json.error || "unknown"}`);
-      } else {
-        warn("CHAT-DELIVERY", `Bridge HTTP ${resp.status}`);
-      }
-    } catch (e) {
-      warn("CHAT-DELIVERY", `Bridge unreachable: ${e.message} — falling back to direct injection`);
-    }
-    return sendChatMessageDirect(message);
-  }
-
-  async function sendChatMessageDirect(message) {
+  /**
+   * Find and return the primary send button in the chat UI.
+   * Filters out sidebar buttons and search inputs.
+   *
+   * @returns {HTMLButtonElement | null}
+   */
+  function findChatSendButton() {
     const SIDEBAR_SEL = '[class*="sideBar"], [class*="sidebar"], [class*="chatList"], aside, nav';
+
+    const allBtns = Array.from(document.querySelectorAll("button, [role='button']"))
+      .filter((b) => b.offsetParent && !b.closest(SIDEBAR_SEL));
+
+    // Priority 1: button with send/submit text or aria-label
+    const named = allBtns.find((b) => {
+      const txt  = (b.textContent || "").trim().toLowerCase();
+      const cls  = (b.className || "").toLowerCase();
+      const aria = (b.getAttribute("aria-label") || "").toLowerCase();
+      const ttip = (b.getAttribute("title") || "").toLowerCase();
+      return /send|submit|发送|确认/i.test(txt + " " + cls + " " + aria + " " + ttip);
+    });
+    if (named) {
+      log("CHAT-DELIVERY", `findChatSendButton: ✅ Found by name: "${named.textContent?.trim()}"`);
+      return named;
+    }
+
+    // Priority 2: single visible button in the chat panel (likely Send)
+    if (allBtns.length === 1) {
+      log("CHAT-DELIVERY", `findChatSendButton: ✅ Only one button visible — using it`);
+      return allBtns[0];
+    }
+
+    // Priority 3: last visible button (send is usually on the right/bottom)
+    const lastBtn = allBtns[allBtns.length - 1];
+    if (lastBtn) {
+      log("CHAT-DELIVERY", `findChatSendButton: ✅ Using last button: "${lastBtn.textContent?.trim()}"`);
+      return lastBtn;
+    }
+
+    return null;
+  }
+
+  /**
+   * Inject message into the chat textarea and send it.
+   * 1. Set value via execCommand insertText (native IME path)
+   * 2. Dispatch input and change events
+   * 3. Wait 500ms
+   * 4. Click the send button
+   *
+   * @param {string} message
+   * @returns {Promise<boolean>}
+   */
+  async function sendChatMessage(message) {
+    if (!message) return false;
+
+    // Find the chat textarea
+    const SIDEBAR_SEL = '[class*="sideBar"], [class*="sidebar"], [class*="chatList"], aside, nav';
+
     function isSearchField(el) {
       if (el.type === "search") return true;
       const ph = (el.placeholder || el.getAttribute("placeholder") || "").toLowerCase();
@@ -763,93 +823,132 @@
       }
       return false;
     }
-    const candidates = Array.from(document.querySelectorAll('textarea, div[contenteditable="true"], input[type="text"]'))
-      .filter(el => el.offsetParent && !el.closest(SIDEBAR_SEL) && !isSearchField(el));
+
+    // Find all visible inputs that are NOT in the sidebar and NOT search fields
+    const candidates = Array.from(document.querySelectorAll('textarea, input[type="text"]'))
+      .filter((el) => el.offsetParent && !el.closest(SIDEBAR_SEL) && !isSearchField(el));
+
     if (!candidates.length) {
-      warn("CHAT-DELIVERY", `sendChatMessageDirect: no chat input found on page`);
+      warn("CHAT-DELIVERY", `sendChatMessage: no chat input found on page`);
       return false;
     }
-    const byPlaceholder = candidates.find(el => {
+
+    // Prefer input with "message" placeholder
+    const byPlaceholder = candidates.find((el) => {
       const ph = (el.placeholder || el.getAttribute("placeholder") || "").toLowerCase();
       return /message|type|write|send|reply|chat/i.test(ph);
     });
     const chatInput = byPlaceholder || candidates[candidates.length - 1];
-    log("CHAT-DELIVERY", `sendChatMessageDirect: targeting <${chatInput.tagName} class="${chatInput.className.slice(0,60)}">`);
+
+    log("CHAT-DELIVERY", `sendChatMessage: targeting <${chatInput.tagName} name="${chatInput.name}" placeholder="${chatInput.placeholder}" class="${chatInput.className.slice(0, 60)}">`);
+
+    // Focus and click the input
     chatInput.focus();
     chatInput.click();
     await sleep(100);
-    const execOk = document.execCommand("insertText", false, message);
-    log("CHAT-DELIVERY", `sendChatMessageDirect: execCommand insertText → ${execOk}`);
+
+    // Clear existing content
+    const proto = chatInput.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    if (setter) setter.call(chatInput, ""); else chatInput.value = "";
     chatInput.dispatchEvent(new Event("input",  { bubbles: true }));
     chatInput.dispatchEvent(new Event("change", { bubbles: true }));
-    await sleep(300);
-    const sendBtn = Array.from(document.querySelectorAll("button, [role='button']"))
-      .find(b => {
-        if (!b.offsetParent || b.closest(SIDEBAR_SEL)) return false;
-        const txt = (b.textContent || "").trim().toLowerCase();
-        const cls = (b.className || "").toLowerCase();
-        return /send|submit|发送|确认/.test(txt + " " + cls);
-      });
+
+    // Method 1: execCommand insertText (routes through native IME → React synthetic events)
+    const execOk = document.execCommand("insertText", false, message);
+    log("CHAT-DELIVERY", `sendChatMessage: execCommand insertText → ${execOk}`);
+
+    // Method 2: Dispatch proper InputEvent for React
+    chatInput.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      cancelable: true,
+      inputType: "insertText",
+      data: message,
+    }));
+    chatInput.dispatchEvent(new Event("input",  { bubbles: true, cancelable: true }));
+    chatInput.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+
+    // Method 3: Try React onChange directly
+    const reacted = safeInjectValue(chatInput, message);
+    log("CHAT-DELIVERY", `sendChatMessage: safeInjectValue → ${reacted}`);
+
+    // Verify content landed
+    const landed = chatInput.value || chatInput.textContent || "";
+    log("CHAT-DELIVERY", `sendChatMessage: content after injection = "${landed.slice(0, 60)}"`);
+
+    if (!landed.trim()) {
+      warn("CHAT-DELIVERY", `sendChatMessage: ⚠️  Content appears empty after injection — proceeding anyway`);
+    }
+
+    // Wait 500ms before clicking send button
+    log("CHAT-DELIVERY", `sendChatMessage: waiting 500ms before clicking send...`);
+    await sleep(500);
+
+    // Find and click the send button
+    const sendBtn = findChatSendButton();
     if (sendBtn) {
       sendBtn.click();
-      log("CHAT-DELIVERY", `✅ Clicked send button`);
+      log("CHAT-DELIVERY", `✅ Clicked send button: "${sendBtn.textContent?.trim()}"`);
       return true;
     }
+
+    // Fallback: dispatch Enter key
+    log("CHAT-DELIVERY", `sendChatMessage: no send button found — dispatching Enter key`);
     const evtOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
     chatInput.dispatchEvent(new KeyboardEvent("keydown",  evtOpts));
     chatInput.dispatchEvent(new KeyboardEvent("keypress", evtOpts));
     chatInput.dispatchEvent(new KeyboardEvent("keyup",    evtOpts));
-    log("CHAT-DELIVERY", `✅ Enter key dispatched`);
     return true;
   }
 
   /**
    * Main chat delivery pipeline for a single order.
-   * Orchestrates: parse M3U → fill form → open chat → send message.
+   * Orchestrates: parse M3U URL → fill order page form → send chat message.
    *
    * @param {string} orderId
    * @param {string} title
    * @param {number} quantity
-   * @param {string} m3uUrl
-   * @param {string | null} extraSamsungLgUrl  — the dns_link_for_samsung_lg for megaott
+   * @param {string} m3uUrl - The M3U URL from prepare-order response
    * @returns {Promise<boolean>}
    */
-  async function runChatDelivery(orderId, title, quantity, m3uUrl, extraSamsungLgUrl = null) {
-    log("CHAT-DELIVERY", `🚀 Starting chat delivery | orderId=${orderId} | m3uUrl="${(m3uUrl || "").slice(0, 80)}" | samsungLg=${!!extraSamsungLgUrl}`);
+  async function runChatDelivery(orderId, title, quantity, m3uUrl) {
+    log("CHAT-DELIVERY", `🚀 Starting chat delivery | orderId=${orderId} | m3uUrl="${(m3uUrl || "").slice(0, 80)}"`);
 
     if (!m3uUrl) {
       err("CHAT-DELIVERY", "No M3U URL provided — cannot extract credentials");
       return false;
     }
 
+    // Step 1: Parse M3U URL to extract credentials
     const parsed = parseM3uUrl(m3uUrl);
     if (!parsed) {
-      err("CHAT-DELIVERY", `Failed to parse M3U URL: "${m3uUrl.slice(0, 80)}`);
+      err("CHAT-DELIVERY", `Failed to parse M3U URL: "${m3uUrl.slice(0, 80)}"`);
       return false;
     }
 
-    const formFilled = fillDeliveryForm(parsed);
-    if (!formFilled) warn("CHAT-DELIVERY", `Form fill was incomplete — continuing anyway`);
+    // Step 2: Fill the order page form with credentials
+    const fillResults = fillOrderPageForm(parsed);
+    if (!fillResults.usernameFilled && !fillResults.passwordFilled) {
+      warn("CHAT-DELIVERY", `Form fill failed — continuing to chat anyway`);
+    }
     await sleep(800);
 
-    const message = formatChatMessage(parsed, extraSamsungLgUrl);
+    // Step 3: Format the chat message
+    const message = formatChatMessage(parsed);
     if (!message) {
       err("CHAT-DELIVERY", "Failed to format chat message");
       return false;
     }
     log("CHAT-DELIVERY", `Message preview:\n${message}`);
 
-    const chatHref = openChatWindow();
-    if (!chatHref) warn("CHAT-DELIVERY", `Could not open chat window — will try direct send`);
-    await sleep(3000);
-
-    const sent = await sendChatMessage(message, orderId);
+    // Step 4: Send the chat message
+    const sent = await sendChatMessage(message);
     if (!sent) {
-      warn("CHAT-DELIVERY", `Message send failed — chat may not have opened correctly`);
+      warn("CHAT-DELIVERY", `Chat message send failed`);
       return false;
     }
 
-    log("CHAT-DELIVERY", `✅ Chat message sent for order ${orderId}`);
+    log("CHAT-DELIVERY", `✅ Chat delivery completed for order ${orderId}`);
     return true;
   }
 
@@ -960,8 +1059,6 @@
       if (!resolvedListTitle) {
         if (!statusText.includes("NEW ORDER")) { log("LIST", `Unmapped order ${orderId} in state "${statusText}" — ignoring.`); continue; }
         if (sessionDone.has(orderId)) { log("LIST", `Unmapped order ${orderId} already prepared this session.`); continue; }
-        const alreadyPrepared = await bgIsPreparedOnly(orderId);
-        if (alreadyPrepared) { log("LIST", `Unmapped order ${orderId} already had Prepare clicked — skipping.`); continue; }
         if (!detailHref) { warn("LIST", `No detail link for unmapped order ${orderId}.`); continue; }
         log("LIST", `⚡ Unmapped NEW ORDER "${title}" (${orderId}) → navigating to click Prepare only`);
         sessionDone.add(orderId);
@@ -1125,13 +1222,13 @@
     log("DETAIL", `🚀 Starting fulfillment | orderId=${orderId} | qty=${quantity}`);
     dumpButtons("DETAIL-BEFORE-PREPARING");
 
-    // ── [6] Determine delivery method ───────────────────────────────────────────
+    // ── [6] Determine delivery method ────────────────────────────────────────────
     const deliveryMethod = mappingEntry.deliveryMethod || "file";
     log("DETAIL", `[6] Delivery method: "${deliveryMethod}"`);
 
     // ── CHAT DELIVERY PATH ────────────────────────────────────────────────────
     if (deliveryMethod === "chat") {
-      log("DETAIL", `[6] 🚀 CHAT DELIVERY path — preparing UI elements / checking trading states`);
+      log("DETAIL", `[6] 🚀 CHAT DELIVERY path`);
 
       const allBtnsNow = Array.from(document.querySelectorAll("button, a"));
       const hasStartTrading = allBtnsNow.some((b) => b.textContent?.trim().toUpperCase().includes("START TRADING"));
@@ -1159,7 +1256,6 @@
           await sleep(2500);
         }
       } else {
-        // Advanced order state fallback
         warn("DETAIL", "[6] CHAT: Neither PREPARING nor START TRADING buttons are present. Order may already be in 'Delivering' state. Proceeding straight to credentials injection.");
       }
 
@@ -1175,58 +1271,47 @@
       // ── [9] Fetch M3U URL from backend ──────────────────────────────────
       log("DETAIL", "[9] CHAT: Calling prepare-order to get M3U URL…");
       let m3uUrl = null;
-      let extraSamsungLgUrl = null; // Holds the secondary link if provider is megaott
 
       try {
         const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
-        log("DETAIL", "[9] CHAT: prepare-order response preview:", JSON.stringify(prepared).slice(0, 150));
+        log("DETAIL", "[9] CHAT: prepare-order response preview:", JSON.stringify(prepared).slice(0, 300));
 
         // Handle explicit API error fields
         if (prepared?.error) {
           throw new Error(`Lfollowers API Error: ${prepared.error}`);
         }
 
-        // Broaden the search path: sometimes APIs wrap it in data.order or just data
-        const order = prepared?.order || prepared?.data?.order || prepared?.data || prepared;
-
-        if (order && typeof order === 'object') {
-          m3uUrl = order.m3u_url || order.dns_link || order.url || prepared.m3u_url || prepared.dns_link;
-
-          if (order.provider === "megaott" || order.dns_link_for_samsung_lg) {
-            extraSamsungLgUrl = order.dns_link_for_samsung_lg;
-            if (extraSamsungLgUrl) {
-              log("DETAIL", `[9] CHAT: Captured extra Samsung/LG link: "${extraSamsungLgUrl.slice(0, 80)}"`);
-            }
-          }
+        // Try nested order object first: prepared.order.m3u_url
+        const orderObj = prepared?.order || prepared?.data?.order || prepared?.data;
+        if (orderObj) {
+          m3uUrl = orderObj.m3u_url || orderObj.dns_link || orderObj.url || prepared.m3u_url || prepared.dns_link;
+          log("CHAT-DELIVERY", `[9] CHAT: extracted m3uUrl="${(m3uUrl || "").slice(0, 80)}"`);
+        } else {
+          // Fallback: try flat keys
+          m3uUrl = prepared?.m3u_url || prepared?.dns_link || prepared?.url || prepared?.data;
         }
 
-        // Absolute fallback if it's returning a raw text string somewhere
-        if (!m3uUrl) {
-          const raw = prepared?.delivered_data || prepared?.data || "";
-          if (typeof raw === 'string' && raw.includes('http')) {
-            // Extract the first http link found in the string
-            const match = raw.match(/(https?:\/\/[^\s]+)/);
-            if (match) m3uUrl = match[1];
-          }
+        if (!m3uUrl && typeof prepared?.data === "string" && prepared.data.includes("http")) {
+          const match = prepared.data.match(/(https?:\/\/[^\s]+)/);
+          if (match) m3uUrl = match[1];
         }
 
         if (m3uUrl) {
           log("DETAIL", `[9] CHAT: M3U URL extracted: "${m3uUrl.slice(0, 80)}"`);
         } else {
-          // PANIC LOG: Print the entire object so the developer can see the exact structure
-          err("DETAIL", `[9] CHAT: Could not find URL keys in payload. Full JSON dump:`, JSON.stringify(prepared));
+          err("DETAIL", `[9] CHAT: Could not find M3U URL in payload. Full JSON dump:`, JSON.stringify(prepared));
         }
       } catch (e) {
         err("DETAIL", `[9] CHAT: prepare-order failed: ${e.message}`);
       }
 
       if (!m3uUrl) {
-        err("DETAIL", "[9] CHAT: No M3U URL found in Lfollowers response — cannot proceed. Check the JSON dump above.");
+        err("DETAIL", "[9] CHAT: No M3U URL found in Lfollowers response — cannot proceed.");
         return;
       }
 
       // ── [10] Run the full chat delivery pipeline ─────────────────────────────
-      const chatOk = await runChatDelivery(orderId, resolvedTitle, quantity, m3uUrl, extraSamsungLgUrl);
+      const chatOk = await runChatDelivery(orderId, resolvedTitle, quantity, m3uUrl);
       if (chatOk) {
         await bgMarkProcessed(orderId);
         log("DETAIL", `[11] ✅ Chat delivery completed for ${orderId}.`);
@@ -1237,7 +1322,7 @@
       log("DETAIL", "↩ Returning to order list in 3s…");
       await sleep(3000);
       window.location.href = "/sellOrder/index";
-      return; // ✅ CRITICAL: prevents falling through to the file delivery path below
+      return;
     }
 
     // ── DIRECT DELIVERY PATH ──────────────────────────────────────────────────
