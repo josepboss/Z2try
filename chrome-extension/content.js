@@ -5,6 +5,14 @@
   const isListPage   = /sellOrder\/index/.test(href);
   const isDetailPage = !isListPage && /sellOrder(\?|$)/.test(href);
 
+  // ── Alternative domain configuration ─────────────────────────────────────────
+  // Maps primary M3U server domains to their alternative/reseller domains.
+  // Add new entries here as needed.
+  const ALTERNATIVE_DOMAINS = {
+    "http://line.dndnscloud.ru": "http://vpn.dndnscloud.ru",
+    "http://line.trxdnscloud.ru": "http://tv.trexiptv.com",
+  };
+
   // ── Listen for upload requests captured by injected.js ──────────────────────
   window.addEventListener("message", (e) => {
     if (e.data?.source !== "__z2u_injected__") return;
@@ -597,16 +605,19 @@
     }
   }
 
-  function getAlternativeDomains(baseDomain) {
-    const config = {
-      "http://line.dndnscloud.ru": ["http://vpn.trxdnscloud.ru", "http://tv.trexiptv.com"],
-    };
-    const normalized = (baseDomain || "").trim().toLowerCase();
-    return config[normalized] || config[baseDomain?.trim()] || [];
+  /**
+   * Get the alternative domain for a given primary domain from ALTERNATIVE_DOMAINS config.
+   *
+   * @param {string} primaryDomain - The primary M3U server domain
+   * @returns {string | null} - The alternative domain, or null if not configured
+   */
+  function getAlternativeDomain(primaryDomain) {
+    const normalized = (primaryDomain || "").trim();
+    return ALTERNATIVE_DOMAINS[normalized] || null;
   }
 
   /**
-   * Format the chat message with credentials and alternative domains.
+   * Format the chat message with credentials and alternative domain.
    * This is sent via Z2U chat — NOT written to any form field.
    *
    * @param {{ username: string, password: string, baseDomain: string }} parsed
@@ -618,7 +629,7 @@
       return '';
     }
     const { username, password, baseDomain } = parsed;
-    const altDomains = getAlternativeDomains(baseDomain);
+    const altDomain = getAlternativeDomain(baseDomain);
 
     const lines = [
       'Login Account',
@@ -631,14 +642,12 @@
       `: ${baseDomain}`,
     ];
 
-    if (altDomains.length > 0) {
-      for (const alt of altDomains) {
-        lines.push(`alternative domain : ${alt}`);
-      }
+    if (altDomain) {
+      lines.push(`alternative domain : ${altDomain}`);
     }
 
     const message = lines.join('\n');
-    log("CHAT-DELIVERY", `formatChatMessage: ✅ ${altDomains.length} alt domains — ${lines.length} lines`);
+    log("CHAT-DELIVERY", `formatChatMessage: ✅ altDomain="${altDomain || "none"}" — ${lines.length} lines`);
     return message;
   }
 
@@ -709,7 +718,7 @@
 
   /**
    * Fill the Z2U order page form with M3U credentials.
-   * Targets ONLY these fields — no other fields are touched:
+   * Targets ONLY these fields:
    *   - input[name="delivery[98]"]  → Login Account (username only)
    *   - input[name="delivery[99]"]  → Login Password (password only)
    *   - input[name="delivery[113]"] → Additional information (Domain + alternative domain only)
@@ -722,7 +731,7 @@
 
     const results = { usernameFilled: false, passwordFilled: false, domainFilled: false };
 
-    // Login Account (username) — delivery[98]
+    // Step A: delivery[98] — Login Account (username only)
     const usernameField = document.querySelector('input[name="delivery[98]"]');
     if (usernameField) {
       results.usernameFilled = safeInjectValue(usernameField, parsed.username);
@@ -731,7 +740,7 @@
       warn("CHAT-DELIVERY", `❌ delivery[98] field not found on page`);
     }
 
-    // Login Password (password) — delivery[99]
+    // Step A: delivery[99] — Login Password (password only)
     const passwordField = document.querySelector('input[name="delivery[99]"]');
     if (passwordField) {
       results.passwordFilled = safeInjectValue(passwordField, parsed.password);
@@ -740,14 +749,15 @@
       warn("CHAT-DELIVERY", `❌ delivery[99] field not found on page`);
     }
 
-    // Additional information (domain + alternative domain) — delivery[113]
-    // Format: "Domain: [domain] alternative domain: [alternative_domain]"
+    // Step A: delivery[113] — Additional Information (Domain + alternative domain)
+    // Format: "Domain: [primary_domain] alternative domain : [alternative_domain]"
+    //         OR: "Domain: [primary_domain]" if no alternative configured
     const domainField = document.querySelector('input[name="delivery[113]"]');
     if (domainField) {
-      const altDomains = getAlternativeDomains(parsed.baseDomain);
+      const altDomain = getAlternativeDomain(parsed.baseDomain);
       let domainValue = `Domain: ${parsed.baseDomain}`;
-      if (altDomains.length > 0) {
-        domainValue += ` alternative domain: ${altDomains[0]}`;
+      if (altDomain) {
+        domainValue += ` alternative domain : ${altDomain}`;
       }
       results.domainFilled = safeInjectValue(domainField, domainValue);
       log("CHAT-DELIVERY", `✅ Filled delivery[113] (Additional info) with "${domainValue}"`);
@@ -962,16 +972,69 @@
   }
 
   /**
+   * Wait for the UI confirmation state to appear using MutationObserver.
+   * Resolves when the quantity input (#j_already_number) is found and visible,
+   * or after a 15-second timeout.
+   *
+   * @returns {Promise<boolean>} - true if the confirmation state appeared, false on timeout
+   */
+  async function waitForConfirmationState() {
+    log("CHAT-DELIVERY", "⏳ Waiting for confirmation state (MutationObserver + timeout)…");
+
+    // First check if it's already visible
+    const existing = document.querySelector('input#j_already_number');
+    if (existing && existing.offsetParent !== null) {
+      log("CHAT-DELIVERY", "✅ Confirmation state already visible — #j_already_number found");
+      return true;
+    }
+
+    return new Promise((resolve) => {
+      const timeoutId = setTimeout(() => {
+        observer.disconnect();
+        log("CHAT-DELIVERY", "⏰ MutationObserver timeout (15s) — proceeding anyway");
+        resolve(false);
+      }, 15000);
+
+      const observer = new MutationObserver((mutations, obs) => {
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) {
+            if (node.nodeType !== 1) continue;
+            // Check the element itself
+            if (node.id === "j_already_number" && node.offsetParent !== null) {
+              clearTimeout(timeoutId);
+              obs.disconnect();
+              log("CHAT-DELIVERY", `✅ Confirmation state appeared — #j_already_number found in added node`);
+              resolve(true);
+              return;
+            }
+            // Check children
+            const qtyInput = node.querySelector?.('input#j_already_number');
+            if (qtyInput && qtyInput.offsetParent !== null) {
+              clearTimeout(timeoutId);
+              obs.disconnect();
+              log("CHAT-DELIVERY", `✅ Confirmation state appeared — #j_already_number found in subtree`);
+              resolve(true);
+              return;
+            }
+          }
+        }
+      });
+
+      observer.observe(document.body, { childList: true, subtree: true });
+      log("CHAT-DELIVERY", "MutationObserver active — watching for #j_already_number");
+    });
+  }
+
+  /**
    * Main chat delivery pipeline for a single order.
    *
-   * Full sequence:
-   *  1. Parse M3U URL → extract username, password, domain
-   *  2. Fill delivery[98] (username), delivery[99] (password), delivery[113] (domain+alt-domain)
-   *  3. Click Submit
-   *  4. Wait for UI to update (1s)
-   *  5. Fill delivery[100] (quantity = 1)
-   *  6. Click Confirm Delivered
-   *  7. ONLY after delivery confirmed → open chat page, inject message, send
+   * Strict sequence:
+   *  A. Fill delivery[98] (username), delivery[99] (password), delivery[113] (domain+alt-domain)
+   *  B. Click Submit
+   *  C. Wait for UI confirmation state (MutationObserver + 15s timeout)
+   *  D. Fill input#j_already_number (quantity) with value 1
+   *  E. Click Confirm Delivered
+   *  F. ONLY after delivery confirmed → open chat page, inject message, send
    *
    * @param {string} orderId
    * @param {string} title
@@ -994,7 +1057,7 @@
       return false;
     }
 
-    // ── Step 2: Fill the order page form ─────────────────────────────────────
+    // ── Step A: Fill the order page form ─────────────────────────────────────
     const fillResults = fillOrderPageForm(parsed);
     if (!fillResults.usernameFilled && !fillResults.passwordFilled) {
       warn("CHAT-DELIVERY", `Form fill failed — cannot proceed`);
@@ -1002,7 +1065,7 @@
     }
     await sleep(500);
 
-    // ── Step 3: Click Submit ─────────────────────────────────────────────────
+    // ── Step B: Click Submit ─────────────────────────────────────────────────
     const submitBtn = findSubmitButton();
     if (!submitBtn) {
       err("CHAT-DELIVERY", "Submit button not found on page");
@@ -1012,21 +1075,24 @@
     submitBtn.click();
     log("CHAT-DELIVERY", `✅ Clicked Submit button: "${submitBtn.textContent?.trim()}"`);
 
-    // ── Step 4: Wait for UI to update (confirmation stage) ───────────────────
-    log("CHAT-DELIVERY", "⏳ Waiting 1s for UI to update after submit...");
-    await sleep(1000);
-
-    // ── Step 5: Fill delivery[100] (Quantity / Delivery Amount) ─────────────
-    const qtyField = document.querySelector('input[name="delivery[100]"]');
-    if (qtyField) {
-      safeInjectValue(qtyField, String(quantity || 1));
-      log("CHAT-DELIVERY", `✅ Filled delivery[100] (Quantity) with "${quantity || 1}"`);
-    } else {
-      warn("CHAT-DELIVERY", `❌ delivery[100] field not found — may already be pre-filled`);
+    // ── Step C: Wait for UI confirmation state ─────────────────────────────
+    const confirmationAppeared = await waitForConfirmationState();
+    if (!confirmationAppeared) {
+      warn("CHAT-DELIVERY", "⚠️  Confirmation state did not appear within 15s — proceeding to try filling quantity anyway");
     }
     await sleep(500);
 
-    // ── Step 6: Click Confirm Delivered ─────────────────────────────────────
+    // ── Step D: Fill input#j_already_number (Quantity) ───────────────────
+    const qtyInput = document.querySelector('input#j_already_number');
+    if (qtyInput) {
+      safeInjectValue(qtyInput, "1");
+      log("CHAT-DELIVERY", `✅ Filled #j_already_number (Quantity) with "1"`);
+    } else {
+      warn("CHAT-DELIVERY", `❌ #j_already_number field not found — may already be pre-filled`);
+    }
+    await sleep(500);
+
+    // ── Step E: Click Confirm Delivered ─────────────────────────────────────
     const confirmBtn = findConfirmDeliveredButton();
     if (!confirmBtn) {
       err("CHAT-DELIVERY", "Confirm Delivered button not found");
@@ -1040,7 +1106,7 @@
     log("CHAT-DELIVERY", "⏳ Waiting 2s for delivery confirmation to process...");
     await sleep(2000);
 
-    // ── Step 7: ONLY after delivery confirmed — open chat and send message ───
+    // ── Step F: ONLY after delivery confirmed — open chat and send message ───
     log("CHAT-DELIVERY", "✅ Delivery confirmed — opening chat page to send credentials...");
 
     // Format the chat message
