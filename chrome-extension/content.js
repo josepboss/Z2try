@@ -606,7 +606,8 @@
   }
 
   /**
-   * Format the chat message with credentials, optional alternative domains.
+   * Format the chat message with credentials and alternative domains.
+   * This is sent via Z2U chat — NOT written to any form field.
    *
    * @param {{ username: string, password: string, baseDomain: string }} parsed
    * @returns {string}
@@ -708,10 +709,10 @@
 
   /**
    * Fill the Z2U order page form with M3U credentials.
-   * Targets:
-   *   - input[name="delivery[98]"]  → Login Account (username)
-   *   - input[name="delivery[99]"]  → Login Password (password)
-   *   - input[name="delivery[113]"] → Additional information (domain)
+   * Targets ONLY these fields — no other fields are touched:
+   *   - input[name="delivery[98]"]  → Login Account (username only)
+   *   - input[name="delivery[99]"]  → Login Password (password only)
+   *   - input[name="delivery[113]"] → Additional information (Domain + alternative domain only)
    *
    * @param {{ username: string, password: string, baseDomain: string }} parsed
    * @returns {{ usernameFilled: boolean, passwordFilled: boolean, domainFilled: boolean }}
@@ -721,7 +722,7 @@
 
     const results = { usernameFilled: false, passwordFilled: false, domainFilled: false };
 
-    // Login Account (username)
+    // Login Account (username) — delivery[98]
     const usernameField = document.querySelector('input[name="delivery[98]"]');
     if (usernameField) {
       results.usernameFilled = safeInjectValue(usernameField, parsed.username);
@@ -730,7 +731,7 @@
       warn("CHAT-DELIVERY", `❌ delivery[98] field not found on page`);
     }
 
-    // Login Password (password)
+    // Login Password (password) — delivery[99]
     const passwordField = document.querySelector('input[name="delivery[99]"]');
     if (passwordField) {
       results.passwordFilled = safeInjectValue(passwordField, parsed.password);
@@ -739,11 +740,17 @@
       warn("CHAT-DELIVERY", `❌ delivery[99] field not found on page`);
     }
 
-    // Additional information (domain)
+    // Additional information (domain + alternative domain) — delivery[113]
+    // Format: "Domain: [domain] alternative domain: [alternative_domain]"
     const domainField = document.querySelector('input[name="delivery[113]"]');
     if (domainField) {
-      results.domainFilled = safeInjectValue(domainField, parsed.baseDomain);
-      log("CHAT-DELIVERY", `✅ Filled delivery[113] (Additional info) with "${parsed.baseDomain}"`);
+      const altDomains = getAlternativeDomains(parsed.baseDomain);
+      let domainValue = `Domain: ${parsed.baseDomain}`;
+      if (altDomains.length > 0) {
+        domainValue += ` alternative domain: ${altDomains[0]}`;
+      }
+      results.domainFilled = safeInjectValue(domainField, domainValue);
+      log("CHAT-DELIVERY", `✅ Filled delivery[113] (Additional info) with "${domainValue}"`);
     } else {
       warn("CHAT-DELIVERY", `❌ delivery[113] field not found on page`);
     }
@@ -752,6 +759,59 @@
     log("CHAT-DELIVERY", `fillOrderPageForm: ${allOk ? '✅ ALL fields filled' : `⚠️  ${Object.values(results).filter(Boolean).length}/3 filled`}`);
 
     return results;
+  }
+
+  /**
+   * Find and click the primary Submit button on the order form.
+   *
+   * @returns {HTMLButtonElement | null}
+   */
+  function findSubmitButton() {
+    const allBtns = Array.from(document.querySelectorAll("button, [role='button'], a"));
+
+    // Priority 1: button with "submit" text or aria-label
+    const named = allBtns.find((b) => {
+      const txt  = (b.textContent || "").trim().toLowerCase();
+      const cls  = (b.className || "").toLowerCase();
+      const aria = (b.getAttribute("aria-label") || "").toLowerCase();
+      const ttip = (b.getAttribute("title") || "").toLowerCase();
+      return /submit|confirm|提交|确认/i.test(txt + " " + cls + " " + aria + " " + ttip);
+    });
+    if (named) {
+      log("CHAT-DELIVERY", `findSubmitButton: ✅ Found by name: "${named.textContent?.trim()}"`);
+      return named;
+    }
+
+    // Priority 2: last visible button (submit is usually at the bottom of the form)
+    const visibleBtns = allBtns.filter((b) => b.offsetParent);
+    const lastBtn = visibleBtns[visibleBtns.length - 1];
+    if (lastBtn) {
+      log("CHAT-DELIVERY", `findSubmitButton: ✅ Using last visible button: "${lastBtn.textContent?.trim()}"`);
+      return lastBtn;
+    }
+
+    return null;
+  }
+
+  /**
+   * Find and click the 'Confirm Delivered' button.
+   *
+   * @returns {HTMLButtonElement | null}
+   */
+  function findConfirmDeliveredButton() {
+    const allBtns = Array.from(document.querySelectorAll("button, [role='button']"));
+
+    const confirmBtn = allBtns.find((b) => {
+      const txt = (b.textContent || "").trim().toLowerCase();
+      return /confirm\s+delivered|delivered|confirm/i.test(txt);
+    });
+
+    if (confirmBtn) {
+      log("CHAT-DELIVERY", `findConfirmDeliveredButton: ✅ Found: "${confirmBtn.textContent?.trim()}"`);
+      return confirmBtn;
+    }
+
+    return null;
   }
 
   /**
@@ -903,7 +963,15 @@
 
   /**
    * Main chat delivery pipeline for a single order.
-   * Orchestrates: parse M3U URL → fill order page form → send chat message.
+   *
+   * Full sequence:
+   *  1. Parse M3U URL → extract username, password, domain
+   *  2. Fill delivery[98] (username), delivery[99] (password), delivery[113] (domain+alt-domain)
+   *  3. Click Submit
+   *  4. Wait for UI to update (1s)
+   *  5. Fill delivery[100] (quantity = 1)
+   *  6. Click Confirm Delivered
+   *  7. ONLY after delivery confirmed → open chat page, inject message, send
    *
    * @param {string} orderId
    * @param {string} title
@@ -919,37 +987,122 @@
       return false;
     }
 
-    // Step 1: Parse M3U URL to extract credentials
+    // ── Step 1: Parse M3U URL to extract credentials ─────────────────────────
     const parsed = parseM3uUrl(m3uUrl);
     if (!parsed) {
       err("CHAT-DELIVERY", `Failed to parse M3U URL: "${m3uUrl.slice(0, 80)}"`);
       return false;
     }
 
-    // Step 2: Fill the order page form with credentials
+    // ── Step 2: Fill the order page form ─────────────────────────────────────
     const fillResults = fillOrderPageForm(parsed);
     if (!fillResults.usernameFilled && !fillResults.passwordFilled) {
-      warn("CHAT-DELIVERY", `Form fill failed — continuing to chat anyway`);
+      warn("CHAT-DELIVERY", `Form fill failed — cannot proceed`);
+      return false;
     }
-    await sleep(800);
+    await sleep(500);
 
-    // Step 3: Format the chat message
+    // ── Step 3: Click Submit ─────────────────────────────────────────────────
+    const submitBtn = findSubmitButton();
+    if (!submitBtn) {
+      err("CHAT-DELIVERY", "Submit button not found on page");
+      dumpButtons("CHAT-SUBMIT-NOT-FOUND");
+      return false;
+    }
+    submitBtn.click();
+    log("CHAT-DELIVERY", `✅ Clicked Submit button: "${submitBtn.textContent?.trim()}"`);
+
+    // ── Step 4: Wait for UI to update (confirmation stage) ───────────────────
+    log("CHAT-DELIVERY", "⏳ Waiting 1s for UI to update after submit...");
+    await sleep(1000);
+
+    // ── Step 5: Fill delivery[100] (Quantity / Delivery Amount) ─────────────
+    const qtyField = document.querySelector('input[name="delivery[100]"]');
+    if (qtyField) {
+      safeInjectValue(qtyField, String(quantity || 1));
+      log("CHAT-DELIVERY", `✅ Filled delivery[100] (Quantity) with "${quantity || 1}"`);
+    } else {
+      warn("CHAT-DELIVERY", `❌ delivery[100] field not found — may already be pre-filled`);
+    }
+    await sleep(500);
+
+    // ── Step 6: Click Confirm Delivered ─────────────────────────────────────
+    const confirmBtn = findConfirmDeliveredButton();
+    if (!confirmBtn) {
+      err("CHAT-DELIVERY", "Confirm Delivered button not found");
+      dumpButtons("CHAT-CONFIRM-NOT-FOUND");
+      return false;
+    }
+    confirmBtn.click();
+    log("CHAT-DELIVERY", `✅ Clicked Confirm Delivered: "${confirmBtn.textContent?.trim()}"`);
+
+    // Wait for the confirmation to process
+    log("CHAT-DELIVERY", "⏳ Waiting 2s for delivery confirmation to process...");
+    await sleep(2000);
+
+    // ── Step 7: ONLY after delivery confirmed — open chat and send message ───
+    log("CHAT-DELIVERY", "✅ Delivery confirmed — opening chat page to send credentials...");
+
+    // Format the chat message
     const message = formatChatMessage(parsed);
     if (!message) {
       err("CHAT-DELIVERY", "Failed to format chat message");
       return false;
     }
-    log("CHAT-DELIVERY", `Message preview:\n${message}`);
+    log("CHAT-DELIVERY", `Chat message preview:\n${message}`);
 
-    // Step 4: Send the chat message
-    const sent = await sendChatMessage(message);
-    if (!sent) {
-      warn("CHAT-DELIVERY", `Chat message send failed`);
-      return false;
+    // Navigate to the chat page for this order
+    const chatUrl = `https://www.z2u.com/Chat?order_id=${orderId}`;
+    log("CHAT-DELIVERY", `🔗 Navigating to chat page: ${chatUrl}`);
+    window.location.href = chatUrl;
+
+    // The chat page will be handled by the next page load.
+    // Store the message in sessionStorage so the chat page can pick it up.
+    try {
+      sessionStorage.setItem("pendingChatMessage", message);
+      sessionStorage.setItem("pendingChatOrderId", orderId);
+      log("CHAT-DELIVERY", `✅ Chat message stored in sessionStorage for order ${orderId}`);
+    } catch (e) {
+      warn("CHAT-DELIVERY", `sessionStorage not available: ${e.message}`);
     }
 
-    log("CHAT-DELIVERY", `✅ Chat delivery completed for order ${orderId}`);
     return true;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  CHAT PAGE — consume stored message and auto-send
+  // ══════════════════════════════════════════════════════════════════════════
+
+  async function runChatPage() {
+    let message, orderId;
+    try {
+      message  = sessionStorage.getItem("pendingChatMessage");
+      orderId  = sessionStorage.getItem("pendingChatOrderId");
+    } catch (_) {
+      message = null;
+      orderId = null;
+    }
+
+    if (!message) {
+      log("CHAT-PAGE", "No pending chat message in sessionStorage — monitoring for new messages.");
+      return;
+    }
+
+    log("CHAT-PAGE", `📩 Found pending chat message for order ${orderId}. Waiting 2s for page to render...`);
+    await sleep(2000);
+
+    // Clear the stored message immediately so a page refresh doesn't re-send
+    try {
+      sessionStorage.removeItem("pendingChatMessage");
+      sessionStorage.removeItem("pendingChatOrderId");
+    } catch (_) {}
+
+    const sent = await sendChatMessage(message);
+    if (sent) {
+      log("CHAT-PAGE", `✅ Chat message sent for order ${orderId}`);
+    } else {
+      warn("CHAT-PAGE", `Chat message send failed for order ${orderId}`);
+    }
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1450,6 +1603,14 @@
   function init() {
     chrome.storage.local.get(["autoPaused"], ({ autoPaused }) => {
       if (autoPaused) { log("INIT", "⏸ Auto-processing is PAUSED. Network capture still active. Resume from popup."); return; }
+
+      // ── Chat page: consume stored message and auto-send ─────────────────────
+      if (/z2u\.com\/Chat/i.test(href)) {
+        log("INIT", "▶ Running on CHAT page. Checking for pending message...");
+        setTimeout(runChatPage, 2500);
+        return;
+      }
+
       if (isListPage) {
         log("INIT", "▶ Running on LIST page. Will scan every 30s.");
         setTimeout(runListPage, 2500);
