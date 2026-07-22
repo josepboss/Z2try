@@ -1426,7 +1426,7 @@
       const titleEl = (
         panel.querySelector(".o-l-col.productInfo a") ||
         panel.querySelector(".productInfo a") ||
-        panel.querySelector('[class*="productInfo"] a") ||
+        panel.querySelector('[class*="productInfo"] a') ||
         panel.querySelector('[class*="goodsName"]') ||
         panel.querySelector('[class*="offerTitle"]') ||
         panel.querySelector('[class*="productTitle"]')
