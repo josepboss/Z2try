@@ -652,6 +652,122 @@
   }
 
   /**
+   * Find an input/textarea by its associated UI text label.
+   *
+   * Z2U dynamically generates delivery[] array index numbers based on the
+   * product category, so they change between orders. This helper searches
+   * the DOM for label-like text (e.g., "Login Account", "Login Password",
+   * "Additional information") and returns the immediately associated input.
+   *
+   * Search strategy (in order):
+   *  1. <label> elements containing the text → use label.htmlFor or descendant input
+   *  2. Following-sibling: find any leaf-text element with the label, then walk
+   *     forward through siblings/parents looking for an input/textarea.
+   *  3. Ancestor: find the text inside a wrapper, then look for an input within
+   *     the same wrapper (or next 3 ancestor levels).
+   *
+   * @param {string} labelText - The text to search for (case-insensitive, trimmed)
+   * @returns {HTMLInputElement | HTMLTextAreaElement | null}
+   */
+  function findInputByLabel(labelText) {
+    if (!labelText) return null;
+    const needle = labelText.trim().toLowerCase();
+    if (!needle) return null;
+
+    log("CHAT-DELIVERY", `[findInputByLabel] Searching for label: "${labelText}"`);
+
+    // ── Strategy 1: <label for="..."> pointing to an input by id ──────────────
+    const labels = Array.from(document.querySelectorAll("label"));
+    for (const lbl of labels) {
+      const txt = (lbl.textContent || "").trim().toLowerCase();
+      if (txt.includes(needle) || needle.includes(txt)) {
+        // Try htmlFor → element by id
+        const forId = lbl.getAttribute("for");
+        if (forId) {
+          const byId = document.getElementById(forId);
+          if (byId && (byId.tagName === "INPUT" || byId.tagName === "TEXTAREA")) {
+            log("CHAT-DELIVERY", `[findInputByLabel] ✅ Found via <label for="${forId}">`);
+            return byId;
+          }
+        }
+        // Try a direct child input
+        const child = lbl.querySelector("input, textarea");
+        if (child) {
+          log("CHAT-DELIVERY", `[findInputByLabel] ✅ Found as <label> child input`);
+          return child;
+        }
+      }
+    }
+
+    // ── Strategy 2: leaf-text element with label, then next/adjacent input ─────
+    const allEls = Array.from(document.querySelectorAll("*"));
+    for (const el of allEls) {
+      if (el.childElementCount > 0) continue;
+      const txt = (el.textContent || "").trim().toLowerCase();
+      if (!txt) continue;
+      if (!txt.includes(needle) && !needle.includes(txt)) continue;
+
+      // Skip if the leaf element itself IS the input (textarea can be matched here too,
+      // but if it is, that means the placeholder text matched — that is fine).
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+        log("CHAT-DELIVERY", `[findInputByLabel] ✅ Leaf element IS an input (placeholder match)`);
+        return el;
+      }
+
+      // Walk forward through siblings to find the next input/textarea
+      let cursor = el.nextElementSibling;
+      let hops = 0;
+      while (cursor && hops < 6) {
+        if (cursor.tagName === "INPUT" || cursor.tagName === "TEXTAREA") {
+          log("CHAT-DELIVERY", `[findInputByLabel] ✅ Found via next-sibling input (hop ${hops})`);
+          return cursor;
+        }
+        const innerInput = cursor.querySelector?.("input, textarea");
+        if (innerInput) {
+          log("CHAT-DELIVERY", `[findInputByLabel] ✅ Found via next-sibling subtree (hop ${hops})`);
+          return innerInput;
+        }
+        cursor = cursor.nextElementSibling;
+        hops++;
+      }
+
+      // Walk through parent's following siblings
+      let parentCursor = el.parentElement?.nextElementSibling;
+      let parentHops = 0;
+      while (parentCursor && parentHops < 3) {
+        const nearby = parentCursor.querySelector?.("input, textarea") ||
+                       (parentCursor.tagName === "INPUT" || parentCursor.tagName === "TEXTAREA" ? parentCursor : null);
+        if (nearby) {
+          log("CHAT-DELIVERY", `[findInputByLabel] ✅ Found via parent-sibling subtree (hop ${parentHops})`);
+          return nearby;
+        }
+        parentCursor = parentCursor.nextElementSibling;
+        parentHops++;
+      }
+    }
+
+    // ── Strategy 3: input whose placeholder/aria-label/aria-describedby contains needle ──
+    const inputs = Array.from(document.querySelectorAll("input, textarea"));
+    for (const inp of inputs) {
+      const placeholder = (inp.getAttribute("placeholder") || "").toLowerCase();
+      const ariaLabel  = (inp.getAttribute("aria-label") || "").toLowerCase();
+      const ariaDescBy = inp.getAttribute("aria-describedby");
+      let descText = "";
+      if (ariaDescBy) {
+        const descEl = document.getElementById(ariaDescBy);
+        descText = (descEl?.textContent || "").toLowerCase();
+      }
+      if (placeholder.includes(needle) || ariaLabel.includes(needle) || descText.includes(needle)) {
+        log("CHAT-DELIVERY", `[findInputByLabel] ✅ Found via input's placeholder/aria attributes`);
+        return inp;
+      }
+    }
+
+    log("CHAT-DELIVERY", `[findInputByLabel] ❌ No input found for label: "${labelText}"`);
+    return null;
+  }
+
+  /**
    * Inject a value into an input element and dispatch proper events for React.
    * Returns true if the value was successfully injected.
    *
@@ -718,10 +834,13 @@
 
   /**
    * Fill the Z2U order page form with M3U credentials.
-   * Targets ONLY these fields:
-   *   - input[name="delivery[98]"]  → Login Account (username only)
-   *   - input[name="delivery[99]"]  → Login Password (password only)
-   *   - input[name="delivery[113]"] → Additional information (Domain + alternative domain only)
+   * Uses dynamic label-based targeting instead of hardcoded delivery[] selectors
+   * because Z2U regenerates array indices per product category.
+   *
+   * Targets these UI text labels (case-insensitive):
+   *   - "Login Account"        → username
+   *   - "Login Password"       → password
+   *   - "Additional information" (or "Additional Information") → domain (+ alt-domain)
    *
    * @param {{ username: string, password: string, baseDomain: string }} parsed
    * @returns {{ usernameFilled: boolean, passwordFilled: boolean, domainFilled: boolean }}
@@ -731,28 +850,29 @@
 
     const results = { usernameFilled: false, passwordFilled: false, domainFilled: false };
 
-    // Step A: delivery[98] — Login Account (username only)
-    const usernameField = document.querySelector('input[name="delivery[98]"]');
+    // ── Login Account (username) ────────────────────────────────────────────────
+    const usernameField = findInputByLabel("Login Account");
     if (usernameField) {
       results.usernameFilled = safeInjectValue(usernameField, parsed.username);
-      log("CHAT-DELIVERY", `✅ Filled delivery[98] (Login Account) with "${parsed.username}"`);
+      log("CHAT-DELIVERY", `✅ Filled Login Account field with "${parsed.username}"`);
     } else {
-      warn("CHAT-DELIVERY", `❌ delivery[98] field not found on page`);
+      warn("CHAT-DELIVERY", `❌ No input found for label "Login Account"`);
     }
 
-    // Step A: delivery[99] — Login Password (password only)
-    const passwordField = document.querySelector('input[name="delivery[99]"]');
+    // ── Login Password (password) ───────────────────────────────────────────────
+    const passwordField = findInputByLabel("Login Password");
     if (passwordField) {
       results.passwordFilled = safeInjectValue(passwordField, parsed.password);
-      log("CHAT-DELIVERY", `✅ Filled delivery[99] (Login Password) with "${parsed.password.slice(0, 4)}..."`);
+      log("CHAT-DELIVERY", `✅ Filled Login Password field with "${parsed.password.slice(0, 4)}..."`);
     } else {
-      warn("CHAT-DELIVERY", `❌ delivery[99] field not found on page`);
+      warn("CHAT-DELIVERY", `❌ No input found for label "Login Password"`);
     }
 
-    // Step A: delivery[113] — Additional Information (Domain + alternative domain)
-    // Format: "Domain: [primary_domain] alternative domain : [alternative_domain]"
-    //         OR: "Domain: [primary_domain]" if no alternative configured
-    const domainField = document.querySelector('input[name="delivery[113]"]');
+    // ── Additional information (domain + alternative domain) ────────────────────
+    // Try "Additional information" first; fall back to "Additional Information"
+    // and "additional information" in case the UI capitalizes differently.
+    const domainField = findInputByLabel("Additional information")
+                     || findInputByLabel("Additional Information");
     if (domainField) {
       const altDomain = getAlternativeDomain(parsed.baseDomain);
       let domainValue = `Domain: ${parsed.baseDomain}`;
@@ -760,9 +880,9 @@
         domainValue += ` alternative domain : ${altDomain}`;
       }
       results.domainFilled = safeInjectValue(domainField, domainValue);
-      log("CHAT-DELIVERY", `✅ Filled delivery[113] (Additional info) with "${domainValue}"`);
+      log("CHAT-DELIVERY", `✅ Filled Additional information field with "${domainValue}"`);
     } else {
-      warn("CHAT-DELIVERY", `❌ delivery[113] field not found on page`);
+      warn("CHAT-DELIVERY", `❌ No input found for label "Additional information"`);
     }
 
     const allOk = results.usernameFilled && results.passwordFilled && results.domainFilled;
@@ -1026,11 +1146,44 @@
   }
 
   /**
+   * Wait until at least one of the expected delivery form fields is rendered.
+   * Uses a custom wait loop that checks for the 'Login Account' label text,
+   * since Z2U dynamically generates delivery[] array indices per product category.
+   *
+   * @param {number} timeout - Max wait in ms
+   * @returns {Promise<boolean>} - true if the form appeared, false on timeout
+   */
+  async function waitForDeliveryForm(timeout = 10000) {
+    log("CHAT-DELIVERY", `⏳ Waiting up to ${timeout / 1000}s for delivery form to render (looking for "Login Account" label)…`);
+
+    const end = Date.now() + timeout;
+    while (Date.now() < end) {
+      // Quick check: does the "Login Account" label exist anywhere on the page?
+      const allEls = Array.from(document.querySelectorAll("*"));
+      const hasLabel = allEls.some((el) => {
+        if (el.childElementCount > 0) return false;
+        const t = (el.textContent || "").trim().toLowerCase();
+        return t.includes("login account");
+      });
+      if (hasLabel) {
+        // Also verify findInputByLabel can resolve it
+        const test = findInputByLabel("Login Account");
+        if (test) {
+          log("CHAT-DELIVERY", `✅ Delivery form rendered — "Login Account" input found`);
+          return true;
+        }
+      }
+      await sleep(400);
+    }
+    return false;
+  }
+
+  /**
    * Main chat delivery pipeline for a single order.
    *
    * Strict sequence:
-   *  A. Wait for delivery[98] form input to render (race-condition guard)
-   *  B. Fill delivery[98] (username), delivery[99] (password), delivery[113] (domain+alt-domain)
+   *  A. Wait for the delivery form to render (custom wait on "Login Account" label)
+   *  B. Fill "Login Account" (username), "Login Password" (password), "Additional information" (domain+alt-domain)
    *  C. Click Submit
    *  D. Wait for UI confirmation state (MutationObserver + 15s timeout)
    *  E. Fill input#j_already_number (quantity) with value 1
@@ -1058,20 +1211,19 @@
       return false;
     }
 
-    // ── Step A: Wait for the form inputs to render into the DOM ───────────────
-    // Race-condition guard: the SPA framework may not have mounted delivery[98]
-    // yet when this function first runs. Wait up to 10s for the primary field.
-    log("CHAT-DELIVERY", "⏳ Waiting up to 10s for delivery[98] to render into DOM…");
-    const formReady = await waitForSelector('input[name="delivery[98]"]', 10000);
+    // ── Step A: Wait for the delivery form to render ────────────────────────────
+    // Race-condition guard: the SPA framework may not have mounted the form
+    // yet when this function first runs. Wait up to 10s for the "Login Account"
+    // label to appear (and resolve to an input via findInputByLabel).
+    const formReady = await waitForDeliveryForm(10000);
     if (!formReady) {
       err("CHAT-DELIVERY", "Form inputs never rendered in the DOM.");
       err("CHAT-DELIVERY", "Aborting chat delivery — page is not in a delivery-ready state.");
       return false;
     }
-    log("CHAT-DELIVERY", "✅ delivery[98] is in the DOM — proceeding to fill form.");
     await sleep(300);
 
-    // ── Step B: Fill the order page form ─────────────────────────────────────
+    // ── Step B: Fill the order page form (label-based targeting) ───────────────
     const fillResults = fillOrderPageForm(parsed);
     if (!fillResults.usernameFilled && !fillResults.passwordFilled) {
       warn("CHAT-DELIVERY", `Form fill failed — cannot proceed`);
@@ -1079,7 +1231,7 @@
     }
     await sleep(500);
 
-    // ── Step C: Click Submit ─────────────────────────────────────────────────
+    // ── Step C: Click Submit ───────────────────────────────────────────────────
     const submitBtn = findSubmitButton();
     if (!submitBtn) {
       err("CHAT-DELIVERY", "Submit button not found on page");
@@ -1089,14 +1241,14 @@
     submitBtn.click();
     log("CHAT-DELIVERY", `✅ Clicked Submit button: "${submitBtn.textContent?.trim()}"`);
 
-    // ── Step D: Wait for UI confirmation state ─────────────────────────────
+    // ── Step D: Wait for UI confirmation state ─────────────────────────────────
     const confirmationAppeared = await waitForConfirmationState();
     if (!confirmationAppeared) {
       warn("CHAT-DELIVERY", "⚠️  Confirmation state did not appear within 15s — proceeding to try filling quantity anyway");
     }
     await sleep(500);
 
-    // ── Step E: Fill input#j_already_number (Quantity) ───────────────────
+    // ── Step E: Fill input#j_already_number (Quantity) ──────────────────────────
     const qtyInput = document.querySelector('input#j_already_number');
     if (qtyInput) {
       safeInjectValue(qtyInput, "1");
@@ -1106,7 +1258,7 @@
     }
     await sleep(500);
 
-    // ── Step F: Click Confirm Delivered ─────────────────────────────────────
+    // ── Step F: Click Confirm Delivered ────────────────────────────────────────
     const confirmBtn = findConfirmDeliveredButton();
     if (!confirmBtn) {
       err("CHAT-DELIVERY", "Confirm Delivered button not found");
@@ -1120,7 +1272,7 @@
     log("CHAT-DELIVERY", "⏳ Waiting 2s for delivery confirmation to process...");
     await sleep(2000);
 
-    // ── Step G: ONLY after delivery confirmed — open chat and send message ───
+    // ── Step G: ONLY after delivery confirmed — open chat and send message ─────
     log("CHAT-DELIVERY", "✅ Delivery confirmed — opening chat page to send credentials...");
 
     // Format the chat message
@@ -1274,7 +1426,7 @@
       const titleEl = (
         panel.querySelector(".o-l-col.productInfo a") ||
         panel.querySelector(".productInfo a") ||
-        panel.querySelector('[class*="productInfo"] a') ||
+        panel.querySelector('[class*="productInfo"] a") ||
         panel.querySelector('[class*="goodsName"]') ||
         panel.querySelector('[class*="offerTitle"]') ||
         panel.querySelector('[class*="productTitle"]')
