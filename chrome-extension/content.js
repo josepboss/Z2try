@@ -1029,12 +1029,13 @@
    * Main chat delivery pipeline for a single order.
    *
    * Strict sequence:
-   *  A. Fill delivery[98] (username), delivery[99] (password), delivery[113] (domain+alt-domain)
-   *  B. Click Submit
-   *  C. Wait for UI confirmation state (MutationObserver + 15s timeout)
-   *  D. Fill input#j_already_number (quantity) with value 1
-   *  E. Click Confirm Delivered
-   *  F. ONLY after delivery confirmed → open chat page, inject message, send
+   *  A. Wait for delivery[98] form input to render (race-condition guard)
+   *  B. Fill delivery[98] (username), delivery[99] (password), delivery[113] (domain+alt-domain)
+   *  C. Click Submit
+   *  D. Wait for UI confirmation state (MutationObserver + 15s timeout)
+   *  E. Fill input#j_already_number (quantity) with value 1
+   *  F. Click Confirm Delivered
+   *  G. ONLY after delivery confirmed → open chat page, inject message, send
    *
    * @param {string} orderId
    * @param {string} title
@@ -1057,7 +1058,20 @@
       return false;
     }
 
-    // ── Step A: Fill the order page form ─────────────────────────────────────
+    // ── Step A: Wait for the form inputs to render into the DOM ───────────────
+    // Race-condition guard: the SPA framework may not have mounted delivery[98]
+    // yet when this function first runs. Wait up to 10s for the primary field.
+    log("CHAT-DELIVERY", "⏳ Waiting up to 10s for delivery[98] to render into DOM…");
+    const formReady = await waitForSelector('input[name="delivery[98]"]', 10000);
+    if (!formReady) {
+      err("CHAT-DELIVERY", "Form inputs never rendered in the DOM.");
+      err("CHAT-DELIVERY", "Aborting chat delivery — page is not in a delivery-ready state.");
+      return false;
+    }
+    log("CHAT-DELIVERY", "✅ delivery[98] is in the DOM — proceeding to fill form.");
+    await sleep(300);
+
+    // ── Step B: Fill the order page form ─────────────────────────────────────
     const fillResults = fillOrderPageForm(parsed);
     if (!fillResults.usernameFilled && !fillResults.passwordFilled) {
       warn("CHAT-DELIVERY", `Form fill failed — cannot proceed`);
@@ -1065,7 +1079,7 @@
     }
     await sleep(500);
 
-    // ── Step B: Click Submit ─────────────────────────────────────────────────
+    // ── Step C: Click Submit ─────────────────────────────────────────────────
     const submitBtn = findSubmitButton();
     if (!submitBtn) {
       err("CHAT-DELIVERY", "Submit button not found on page");
@@ -1075,14 +1089,14 @@
     submitBtn.click();
     log("CHAT-DELIVERY", `✅ Clicked Submit button: "${submitBtn.textContent?.trim()}"`);
 
-    // ── Step C: Wait for UI confirmation state ─────────────────────────────
+    // ── Step D: Wait for UI confirmation state ─────────────────────────────
     const confirmationAppeared = await waitForConfirmationState();
     if (!confirmationAppeared) {
       warn("CHAT-DELIVERY", "⚠️  Confirmation state did not appear within 15s — proceeding to try filling quantity anyway");
     }
     await sleep(500);
 
-    // ── Step D: Fill input#j_already_number (Quantity) ───────────────────
+    // ── Step E: Fill input#j_already_number (Quantity) ───────────────────
     const qtyInput = document.querySelector('input#j_already_number');
     if (qtyInput) {
       safeInjectValue(qtyInput, "1");
@@ -1092,7 +1106,7 @@
     }
     await sleep(500);
 
-    // ── Step E: Click Confirm Delivered ─────────────────────────────────────
+    // ── Step F: Click Confirm Delivered ─────────────────────────────────────
     const confirmBtn = findConfirmDeliveredButton();
     if (!confirmBtn) {
       err("CHAT-DELIVERY", "Confirm Delivered button not found");
@@ -1106,7 +1120,7 @@
     log("CHAT-DELIVERY", "⏳ Waiting 2s for delivery confirmation to process...");
     await sleep(2000);
 
-    // ── Step F: ONLY after delivery confirmed — open chat and send message ───
+    // ── Step G: ONLY after delivery confirmed — open chat and send message ───
     log("CHAT-DELIVERY", "✅ Delivery confirmed — opening chat page to send credentials...");
 
     // Format the chat message
